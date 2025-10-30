@@ -1,16 +1,28 @@
 "use client";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ref, onValue, set, push, onDisconnect, runTransaction, remove, get } from "firebase/database";
+import {
+  ref,
+  onValue,
+  set,
+  push,
+  runTransaction,
+  remove,
+  get,
+  update,
+} from "firebase/database";
 import { db } from "@/lib/firebase";
 import dynamic from "next/dynamic";
 
-const Wheel = dynamic(() => import("react-custom-roulette").then(m => m.Wheel), { ssr: false });
+const Wheel = dynamic(
+  () => import("react-custom-roulette").then((m) => m.Wheel),
+  { ssr: false }
+);
 
 const GAME_SIZE = 3;
 const INITIAL_COUNTRIES = [
   { name: "Japan", flag: "🇯🇵" },
   { name: "Brazil", flag: "🇧🇷" },
-  { name: "Canada", flag: "🇨🇦" }
+  { name: "Canada", flag: "🇨🇦" },
 ];
 const ROOM_ID = "test-room";
 
@@ -18,6 +30,7 @@ interface Player {
   id: string;
   username: string;
   joinedAt: number;
+  lastSeen?: number;
 }
 
 interface GameState {
@@ -45,12 +58,14 @@ export default function Page() {
     currentSpinnerId: null,
     countries: INITIAL_COUNTRIES,
     remainingPlayerIds: [],
-    results: []
+    results: [],
   });
   const [usernameInput, setUsernameInput] = useState("");
   const [spinning, setSpinning] = useState(false);
   const [prizeNumber, setPrizeNumber] = useState(0);
-  const [savedPlayer, setSavedPlayer] = useState<{ id: string; username: string } | null>(null);
+  const [savedPlayer, setSavedPlayer] = useState<{ id: string; username: string } | null>(
+    null
+  );
 
   // Load saved player from localStorage
   useEffect(() => {
@@ -61,13 +76,21 @@ export default function Page() {
 
   // Watch Firebase state
   useEffect(() => onValue(playersRef, (snap) => setPlayers(snap.val() || {})), []);
-  useEffect(() => onValue(stateRef, (snap) => setState(snap.val() || {
-    started: false,
-    currentSpinnerId: null,
-    countries: INITIAL_COUNTRIES,
-    remainingPlayerIds: [],
-    results: []
-  })), []);
+  useEffect(
+    () =>
+      onValue(stateRef, (snap) =>
+        setState(
+          snap.val() || {
+            started: false,
+            currentSpinnerId: null,
+            countries: INITIAL_COUNTRIES,
+            remainingPlayerIds: [],
+            results: [],
+          }
+        )
+      ),
+    []
+  );
 
   // Ensure room exists
   useEffect(() => {
@@ -78,7 +101,7 @@ export default function Page() {
           currentSpinnerId: null,
           countries: INITIAL_COUNTRIES,
           remainingPlayerIds: [],
-          results: []
+          results: [],
         };
         set(roomRef, { state: initial, players: {} });
       }
@@ -92,11 +115,12 @@ export default function Page() {
   const handleJoin = async () => {
     const username = usernameInput.trim().slice(0, 20);
     if (!username) return;
+
     const newRef = push(playersRef);
     const meId = newRef.key!;
-    const player: Player = { id: meId, username, joinedAt: Date.now() };
+    const player: Player = { id: meId, username, joinedAt: Date.now(), lastSeen: Date.now() };
+
     await set(newRef, player);
-    onDisconnect(newRef).remove();
     setMe(player);
     localStorage.setItem("wheelPlayerId", meId);
     localStorage.setItem("wheelUsername", username);
@@ -107,16 +131,43 @@ export default function Page() {
   const handleRejoin = async () => {
     if (!savedPlayer) return;
     const playerSnap = await get(ref(db, `rooms/${ROOM_ID}/players/${savedPlayer.id}`));
+
     let player: Player;
     if (playerSnap.exists()) {
       player = playerSnap.val() as Player;
     } else {
-      player = { id: savedPlayer.id, username: savedPlayer.username, joinedAt: Date.now() };
+      player = {
+        id: savedPlayer.id,
+        username: savedPlayer.username,
+        joinedAt: Date.now(),
+        lastSeen: Date.now(),
+      };
       await set(ref(db, `rooms/${ROOM_ID}/players/${savedPlayer.id}`), player);
     }
-    onDisconnect(ref(db, `rooms/${ROOM_ID}/players/${savedPlayer.id}`)).remove();
+
     setMe(player);
   };
+
+  // Heartbeat system 🫀
+  useEffect(() => {
+    if (!me) return;
+    const interval = setInterval(() => {
+      update(ref(db, `rooms/${ROOM_ID}/players/${me.id}`), {
+        lastSeen: Date.now(),
+      });
+    }, 5000);
+    return () => clearInterval(interval);
+  }, [me]);
+
+  // Determine online players
+  const now = Date.now();
+  const onlinePlayerIds = useMemo(
+    () =>
+      Object.values(players)
+        .filter((p) => p.lastSeen && now - p.lastSeen < 15000)
+        .map((p) => p.id),
+    [players, now]
+  );
 
   // Start game
   const canStart = !state?.started && playerCount >= GAME_SIZE;
@@ -131,7 +182,7 @@ export default function Page() {
         currentSpinnerId: null,
         remainingPlayerIds,
         countries: curr.countries.slice(0, GAME_SIZE),
-        results: []
+        results: [],
       };
     });
   };
@@ -140,7 +191,8 @@ export default function Page() {
   useEffect(() => {
     if (state?.started && !state?.currentSpinnerId && (state?.remainingPlayerIds?.length || 0) > 0) {
       runTransaction(stateRef, (curr: GameState | null) => {
-        if (!curr || !curr.started || curr.currentSpinnerId || !curr.remainingPlayerIds.length) return curr;
+        if (!curr || !curr.started || curr.currentSpinnerId || !curr.remainingPlayerIds.length)
+          return curr;
         const chosen = chooseRandom(curr.remainingPlayerIds);
         if (!chosen) return curr;
         return { ...curr, currentSpinnerId: chosen };
@@ -148,7 +200,7 @@ export default function Page() {
     }
   }, [state?.started, state?.currentSpinnerId, state?.remainingPlayerIds]);
 
-  // ✅ NEW: auto-enable spin if player rejoins and it's their turn
+  // Re-enable spin if player rejoined and it's their turn
   useEffect(() => {
     if (me && state?.currentSpinnerId === me.id && !spinning) {
       console.log("Rejoined during your turn — spin enabled");
@@ -159,7 +211,10 @@ export default function Page() {
 
   // Wheel logic
   const wheelData = useMemo(
-    () => (Array.isArray(state?.countries) ? state.countries.map(c => ({ option: `${c.flag} ${c.name}` })) : []),
+    () =>
+      Array.isArray(state?.countries)
+        ? state.countries.map((c) => ({ option: `${c.flag} ${c.name}` }))
+        : [],
     [state?.countries]
   );
 
@@ -181,7 +236,9 @@ export default function Page() {
 
       const winningCountry = curr.countries[prizeNumber];
       const playerName = players[curr.currentSpinnerId]?.username || "Unknown";
-      const nextRemaining = curr.remainingPlayerIds.filter(id => id !== curr.currentSpinnerId);
+      const nextRemaining = curr.remainingPlayerIds.filter(
+        (id) => id !== curr.currentSpinnerId
+      );
       const nextCountries = curr.countries.filter((_, i) => i !== prizeNumber);
 
       return {
@@ -191,13 +248,12 @@ export default function Page() {
         currentSpinnerId: null,
         results: [
           ...(curr.results || []),
-          { playerName, country: winningCountry.name, flag: winningCountry.flag }
-        ]
+          { playerName, country: winningCountry.name, flag: winningCountry.flag },
+        ],
       };
     });
   };
 
-  // Reset
   const resetRoom = async () => {
     await remove(roomRef);
     const initial: GameState = {
@@ -205,7 +261,7 @@ export default function Page() {
       currentSpinnerId: null,
       countries: INITIAL_COUNTRIES,
       remainingPlayerIds: [],
-      results: []
+      results: [],
     };
     await set(roomRef, { state: initial, players: {} });
     setMe(null);
@@ -237,13 +293,17 @@ export default function Page() {
           {savedPlayer ? (
             <>
               <div className="p-3 border rounded-md bg-gray-100 dark:bg-neutral-800">
-                <p className="text-sm mb-2">Welcome back, <b>{savedPlayer.username}</b>!</p>
+                <p className="text-sm mb-2">
+                  Welcome back, <b>{savedPlayer.username}</b>!
+                </p>
                 <button className="btn btn-primary w-full" onClick={handleRejoin}>
                   Rejoin as {savedPlayer.username}
                 </button>
               </div>
 
-              <div className="text-center text-xs opacity-60 my-2">— or join as a new player —</div>
+              <div className="text-center text-xs opacity-60 my-2">
+                — or join as a new player —
+              </div>
             </>
           ) : null}
 
@@ -255,24 +315,44 @@ export default function Page() {
               onChange={(e) => setUsernameInput(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && handleJoin()}
             />
-            <button className="btn btn-primary" onClick={handleJoin}>Join</button>
+            <button className="btn btn-primary" onClick={handleJoin}>
+              Join
+            </button>
           </div>
         </section>
       )}
 
       <section className="card space-y-3">
-        <h2 className="text-lg font-semibold">Lobby · Players ({playerCount}/{GAME_SIZE})</h2>
+        <h2 className="text-lg font-semibold">
+          Lobby · Players ({playerCount}/{GAME_SIZE})
+        </h2>
         <div className="flex flex-wrap gap-2">
-          {Object.values(players || {}).map(p => (
-            <div key={p.id} className="px-3 py-1 rounded-full bg-gray-100 dark:bg-neutral-800">
-              {p.username}
-            </div>
-          ))}
-          {playerCount === 0 && <div className="text-sm opacity-60">Waiting for players…</div>}
+          {Object.values(players || {}).map((p) => {
+            const online = onlinePlayerIds.includes(p.id);
+            return (
+              <div
+                key={p.id}
+                className={`px-3 py-1 rounded-full ${
+                  online
+                    ? "bg-green-200 text-green-900 dark:bg-green-700"
+                    : "bg-gray-100 dark:bg-neutral-800 opacity-60"
+                }`}
+              >
+                {p.username}
+              </div>
+            );
+          })}
+          {playerCount === 0 && (
+            <div className="text-sm opacity-60">Waiting for players…</div>
+          )}
         </div>
         <div className="flex items-center gap-2">
-          <button className="btn btn-primary" disabled={!canStart} onClick={handleStart}>Start game</button>
-          <button className="btn btn-secondary" onClick={resetRoom}>Reset Game</button>
+          <button className="btn btn-primary" disabled={!canStart} onClick={handleStart}>
+            Start game
+          </button>
+          <button className="btn btn-secondary" onClick={resetRoom}>
+            Reset Game
+          </button>
         </div>
       </section>
 
@@ -281,18 +361,20 @@ export default function Page() {
           <div className="flex items-center justify-between">
             <h2 className="text-lg font-semibold">Game</h2>
             <div className="text-sm opacity-70">
-              Remaining: {(state?.countries?.length || 0)} countries · {(state?.remainingPlayerIds?.length || 0)} players
+              Remaining: {(state?.countries?.length || 0)} countries ·{" "}
+              {(state?.remainingPlayerIds?.length || 0)} players
             </div>
           </div>
 
           <div className="text-sm">
-            Chosen to spin: <span className="font-semibold">{currentSpinnerName || "(selecting...)"}</span>
+            Chosen to spin:{" "}
+            <span className="font-semibold">{currentSpinnerName || "(selecting...)"}</span>
           </div>
 
           <div className="flex flex-col items-center gap-3">
             <div className="w-full max-w-[360px]">
               <Wheel
-                key={wheelData.map(d => d.option).join("|")}
+                key={wheelData.map((d) => d.option).join("|")}
                 mustStartSpinning={spinning}
                 prizeNumber={prizeNumber}
                 data={wheelData}
@@ -307,20 +389,29 @@ export default function Page() {
               onClick={spin}
               disabled={!amChosen || spinning || gameOver || (state?.countries?.length ?? 0) === 0}
             >
-              {amChosen ? (spinning ? "Spinning…" : "Spin the wheel") : "Waiting for spinner"}
+              {amChosen
+                ? spinning
+                  ? "Spinning…"
+                  : "Spin the wheel"
+                : "Waiting for spinner"}
             </button>
           </div>
 
           <div className="overflow-x-auto">
             <table className="table">
               <thead>
-                <tr><th className="w-1/2">Player</th><th className="w-1/2">Result</th></tr>
+                <tr>
+                  <th className="w-1/2">Player</th>
+                  <th className="w-1/2">Result</th>
+                </tr>
               </thead>
               <tbody>
                 {(state?.results ?? []).map((r, idx) => (
                   <tr key={idx}>
                     <td>{r.playerName}</td>
-                    <td>{r.flag} {r.country}</td>
+                    <td>
+                      {r.flag} {r.country}
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -328,7 +419,9 @@ export default function Page() {
           </div>
 
           {gameOver && (
-            <div className="text-center text-sm opacity-80">🎉 Game complete! You can reset to play again.</div>
+            <div className="text-center text-sm opacity-80">
+              🎉 Game complete! You can reset to play again.
+            </div>
           )}
         </section>
       )}
