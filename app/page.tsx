@@ -36,6 +36,7 @@ interface Player {
 interface GameState {
   started: boolean;
   currentSpinnerId: string | null;
+  spinning?: boolean; // 🔒 new lock flag
   countries: { name: string; flag: string }[];
   remainingPlayerIds: string[];
   results: { playerName: string; country: string; flag: string }[];
@@ -56,6 +57,7 @@ export default function Page() {
   const [state, setState] = useState<GameState>({
     started: false,
     currentSpinnerId: null,
+    spinning: false,
     countries: INITIAL_COUNTRIES,
     remainingPlayerIds: [],
     results: [],
@@ -86,6 +88,7 @@ export default function Page() {
       const data = snap.val() || {
         started: false,
         currentSpinnerId: null,
+        spinning: false,
         countries: INITIAL_COUNTRIES,
         remainingPlayerIds: [],
         results: [],
@@ -101,6 +104,7 @@ export default function Page() {
         const initial: GameState = {
           started: false,
           currentSpinnerId: null,
+          spinning: false,
           countries: INITIAL_COUNTRIES,
           remainingPlayerIds: [],
           results: [],
@@ -182,6 +186,7 @@ export default function Page() {
         ...curr,
         started: true,
         currentSpinnerId: null,
+        spinning: false,
         remainingPlayerIds,
         countries: curr.countries.slice(0, GAME_SIZE),
         results: [],
@@ -191,16 +196,27 @@ export default function Page() {
 
   // Auto pick spinner
   useEffect(() => {
-    if (state?.started && !state?.currentSpinnerId && (state?.remainingPlayerIds?.length || 0) > 0) {
+    if (
+      state?.started &&
+      !state?.currentSpinnerId &&
+      (state?.remainingPlayerIds?.length || 0) > 0 &&
+      !state?.spinning
+    ) {
       runTransaction(stateRef, (curr: GameState | null) => {
-        if (!curr || !curr.started || curr.currentSpinnerId || !curr.remainingPlayerIds.length)
+        if (
+          !curr ||
+          !curr.started ||
+          curr.currentSpinnerId ||
+          curr.spinning ||
+          !curr.remainingPlayerIds.length
+        )
           return curr;
         const chosen = chooseRandom(curr.remainingPlayerIds);
         if (!chosen) return curr;
         return { ...curr, currentSpinnerId: chosen };
       });
     }
-  }, [state?.started, state?.currentSpinnerId, state?.remainingPlayerIds]);
+  }, [state?.started, state?.currentSpinnerId, state?.remainingPlayerIds, state?.spinning]);
 
   const amChosen = me && state?.currentSpinnerId === me.id;
 
@@ -214,10 +230,17 @@ export default function Page() {
   );
 
   const spin = async () => {
-    if (!amChosen || spinning) return;
+    if (!amChosen || spinning || state.spinning) return;
     const countries = state?.countries || [];
     if (!countries.length) return;
     const index = Math.floor(Math.random() * countries.length);
+
+    // 🔒 Lock spinning in Firebase
+    await runTransaction(stateRef, (curr: GameState | null) => {
+      if (!curr || curr.spinning) return curr;
+      return { ...curr, spinning: true };
+    });
+
     setPrizeNumber(index);
     setSpinning(true);
   };
@@ -227,7 +250,7 @@ export default function Page() {
     await runTransaction(stateRef, (curr: GameState | null) => {
       if (!curr || !curr.currentSpinnerId) return curr;
       if (!curr.remainingPlayerIds.includes(curr.currentSpinnerId)) return curr;
-      if (!curr.countries[prizeNumber]) return curr;
+      if (!curr.countries[prizeNumber]) return { ...curr, spinning: false };
 
       const winningCountry = curr.countries[prizeNumber];
       const playerName = players[curr.currentSpinnerId]?.username || "Unknown";
@@ -241,6 +264,7 @@ export default function Page() {
         countries: nextCountries,
         remainingPlayerIds: nextRemaining,
         currentSpinnerId: null,
+        spinning: false, // 🔓 unlock
         results: [
           ...(curr.results || []),
           { playerName, country: winningCountry.name, flag: winningCountry.flag },
@@ -254,6 +278,7 @@ export default function Page() {
     const initial: GameState = {
       started: false,
       currentSpinnerId: null,
+      spinning: false,
       countries: INITIAL_COUNTRIES,
       remainingPlayerIds: [],
       results: [],
@@ -274,7 +299,10 @@ export default function Page() {
     return `${player.username}${isOnline ? "" : " (offline)"}`;
   }, [state?.currentSpinnerId, players, onlinePlayerIds]);
 
-  const gameOver = state?.started && (state?.results?.length || 0) >= GAME_SIZE;
+  const gameOver =
+    state?.started &&
+    (state?.results?.length || 0) >= GAME_SIZE &&
+    state?.remainingPlayerIds?.length === 0;
 
   return (
     <main className="container space-y-6">
@@ -384,7 +412,7 @@ export default function Page() {
             <button
               className="btn btn-primary"
               onClick={spin}
-              disabled={!amChosen || spinning || gameOver || (state?.countries?.length ?? 0) === 0}
+              disabled={!amChosen || spinning || state.spinning || gameOver || (state?.countries?.length ?? 0) === 0}
             >
               {amChosen
                 ? spinning
