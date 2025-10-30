@@ -20,7 +20,6 @@ export default function StableWheel({
   const wheelRef = useRef<HTMLDivElement>(null);
   const lastToken = useRef(0);
 
-  // Handle spin trigger
   useEffect(() => {
     if (triggerToken === 0 || triggerToken === lastToken.current) return;
     if (!data || data.length === 0) return;
@@ -28,9 +27,9 @@ export default function StableWheel({
     lastToken.current = triggerToken;
     setSpinning(true);
 
-    const randomTurns = 3 + Math.random() * 2; // 3–5 rotations
+    const randomTurns = 3 + Math.random() * 2; // 3–5 full rotations
     const degPerSegment = 360 / data.length;
-    const stopDeg = 360 - prizeNumber * degPerSegment;
+    const stopDeg = prizeNumber * degPerSegment + degPerSegment / 2;
     const finalRotation = rotation + randomTurns * 360 + stopDeg;
 
     setRotation(finalRotation);
@@ -52,7 +51,7 @@ export default function StableWheel({
   }
 
   const segAngle = 360 / data.length;
-  const radius = 150; // px
+  const radius = 150;
 
   return (
     <div className="relative flex flex-col items-center">
@@ -65,48 +64,48 @@ export default function StableWheel({
           height: radius * 2,
           transform: `rotate(${rotation}deg)`,
           transition: spinning ? "transform 4s cubic-bezier(0.25,0.1,0.25,1)" : "none",
-          background: "white",
+          background: "conic-gradient(" +
+            data
+              .map((_, i) => {
+                const color = i % 2 === 0 ? "#FFD95A" : "#FFB347";
+                const start = (i * segAngle).toFixed(2);
+                const end = ((i + 1) * segAngle).toFixed(2);
+                return `${color} ${start}deg ${end}deg`;
+              })
+              .join(",") +
+            ")",
         }}
       >
+        {/* Segment labels */}
         {data.map((seg, i) => {
-          const startAngle = i * segAngle;
-          const endAngle = startAngle + segAngle;
-          const color = i % 2 === 0 ? "#FFD95A" : "#FFB347"; // alternate gold/orange
-          const textRotation = startAngle + segAngle / 2;
+          const midAngle = i * segAngle + segAngle / 2;
+          const textRotation = midAngle;
 
           return (
             <div
               key={i}
-              className="absolute inset-0 flex items-center justify-center"
+              className="absolute inset-0 flex items-center justify-center text-sm font-bold"
               style={{
-                background: `conic-gradient(${color} ${startAngle}deg ${endAngle}deg, transparent ${endAngle}deg 360deg)`,
-                borderRadius: "50%",
+                transform: `rotate(${textRotation}deg) translate(${radius * 0.65}px) rotate(90deg)`,
+                userSelect: "none",
               }}
             >
-              <div
-                className="absolute inset-0 flex items-center justify-center text-sm font-bold"
-                style={{
-                  transform: `rotate(${textRotation}deg) translate(${radius * 0.55}px) rotate(90deg)`,
-                  whiteSpace: "nowrap",
-                  userSelect: "none",
-                }}
-              >
-                {seg.option}
-              </div>
+              {seg.option}
             </div>
           );
         })}
       </div>
 
-      {/* Pointer (flipped downwards) */}
+      {/* Pointer at TOP (rotated downwards 180°) */}
       <div
-        className="absolute top-[calc(100%+2px)] left-1/2 -translate-x-1/2"
+        className="absolute -top-3 left-1/2 -translate-x-1/2"
         style={{
           width: 0,
           height: 0,
           borderLeft: "10px solid transparent",
           borderRight: "10px solid transparent",
-          borderTop: "20px solid red",
+          borderBottom: "20px solid red",
+          transform: "rotate(180deg)", // flip downward
         }}
       ></div>
     </div>
