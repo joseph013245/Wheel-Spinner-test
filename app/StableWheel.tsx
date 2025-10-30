@@ -2,27 +2,30 @@
 import React, { useEffect, useRef, useState, memo } from "react";
 import dynamic from "next/dynamic";
 
-// Load the real wheel (no SSR)
+// Dynamically import wheel only when needed
 const WheelBase = dynamic(
-  () => import("react-custom-roulette").then((m) => m.Wheel),
-  { ssr: false }
+  () =>
+    import("react-custom-roulette").then((m) => m.Wheel),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="text-sm opacity-60 text-center py-10">
+        Loading wheel…
+      </div>
+    ),
+  }
 );
 
 type Props = {
-  /** Immutable data for this spin (array of { option: "🇯🇵 Japan" } ) */
   data: { option: string }[];
-  /** Increments each time you want to start a new spin (prevents boolean flapping) */
   triggerToken: number;
-  /** The winning segment index for this spin */
   prizeNumber: number;
-  /** Called once the wheel animation finishes */
   onFinished: () => void;
 };
 
 /**
- * A fully isolated wheel. It **freezes props** at spin start so that
- * any parent re-renders (Firebase updates, timers, etc.) CANNOT reset
- * or jolt the animation mid-spin.
+ * StableWheel: Isolated wheel that freezes its props at spin time.
+ * Ensures react-custom-roulette never receives undefined data.
  */
 const StableWheel = memo(function StableWheel({
   data,
@@ -30,31 +33,49 @@ const StableWheel = memo(function StableWheel({
   prizeNumber,
   onFinished,
 }: Props) {
-  // Local frozen state for the active spin
   const [spinning, setSpinning] = useState(false);
   const [frozenData, setFrozenData] = useState<{ option: string }[]>([]);
   const [frozenPrize, setFrozenPrize] = useState(0);
-
-  // Start a spin whenever triggerToken changes
+  const [wheelReady, setWheelReady] = useState(false);
   const lastTokenRef = useRef<number>(0);
+
+  // Wait for data before ever allowing a render
+  const safeData =
+    Array.isArray(data) && data.length > 0
+      ? data
+      : [{ option: "🎡 Waiting…" }];
+
+  // Track wheel loaded
   useEffect(() => {
-    if (triggerToken === 0) return;              // first render - do nothing
+    setWheelReady(true);
+  }, []);
+
+  // Start new spin
+  useEffect(() => {
+    if (!wheelReady) return;
+    if (triggerToken === 0) return;
     if (triggerToken === lastTokenRef.current) return;
 
-    // Freeze the inputs for this whole animation
-    setFrozenData(data);
+    setFrozenData(safeData);
     setFrozenPrize(prizeNumber);
     setSpinning(true);
-
     lastTokenRef.current = triggerToken;
-  }, [triggerToken, prizeNumber, data]);
+  }, [triggerToken, prizeNumber, wheelReady]);
+
+  // If still loading or no data yet
+  if (!wheelReady || !Array.isArray(safeData) || safeData.length === 0) {
+    return (
+      <div className="text-sm opacity-60 text-center py-10">
+        Preparing wheel...
+      </div>
+    );
+  }
 
   return (
     <WheelBase
       mustStartSpinning={spinning}
       prizeNumber={frozenPrize}
       data={frozenData}
-      // IMPORTANT: never change key; keep the same component instance
       outerBorderColor="#111"
       radiusLineColor="#333"
       fontSize={14}

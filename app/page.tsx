@@ -11,14 +11,6 @@ import {
   update,
 } from "firebase/database";
 import { db } from "@/lib/firebase";
-// ❌ remove the old Wheel dynamic import
-// import dynamic from "next/dynamic";
-// const Wheel = dynamic(
-//   () => import("react-custom-roulette").then((m) => m.Wheel),
-//   { ssr: false }
-// );
-
-// ✅ CHANGED: import the isolated wheel component
 import StableWheel from "./StableWheel";
 
 const GAME_SIZE = 3;
@@ -64,12 +56,9 @@ export default function Page() {
     results: [],
   });
   const [usernameInput, setUsernameInput] = useState("");
-
-  // ✅ local UI-only spin controls
   const [spinning, setSpinning] = useState(false);
   const [prizeNumber, setPrizeNumber] = useState(0);
-  const [spinToken, setSpinToken] = useState(0);  // increments to trigger StableWheel
-
+  const [spinToken, setSpinToken] = useState(0); // triggers StableWheel spin
   const [savedPlayer, setSavedPlayer] = useState<{ id: string; username: string } | null>(null);
 
   // Load saved player from localStorage
@@ -155,18 +144,16 @@ export default function Page() {
     setMe(player);
   };
 
-  // Heartbeat system
+  // Heartbeat
   useEffect(() => {
     if (!me) return;
     const interval = setInterval(() => {
-      update(ref(db, `rooms/${ROOM_ID}/players/${me.id}`), {
-        lastSeen: Date.now(),
-      });
+      update(ref(db, `rooms/${ROOM_ID}/players/${me.id}`), { lastSeen: Date.now() });
     }, 5000);
     return () => clearInterval(interval);
   }, [me]);
 
-  // Determine online players
+  // Online players
   const now = Date.now();
   const onlinePlayerIds = useMemo(
     () =>
@@ -209,43 +196,38 @@ export default function Page() {
 
   const amChosen = me && state?.currentSpinnerId === me.id;
 
-  // Wheel data (from Firebase, but the wheel will FREEZE it per spin)
-  const wheelData = useMemo(
-    () =>
-      Array.isArray(state?.countries)
-        ? state.countries.map((c) => ({ option: `${c.flag} ${c.name}` }))
-        : [],
-    [state?.countries]
-  );
+  // ✅ Safe wheel data
+  const wheelData = useMemo(() => {
+    if (!Array.isArray(state?.countries) || state.countries.length === 0) {
+      return [{ option: "🎡 Waiting…" }];
+    }
+    return state.countries.map((c) => ({ option: `${c.flag} ${c.name}` }));
+  }, [state?.countries]);
 
-  // Start a spin — only chosen player can do it
+  // Spin button handler
   const spin = async () => {
     if (!amChosen || spinning) return;
     const countries = state?.countries || [];
     if (!countries.length) return;
-
     const index = Math.floor(Math.random() * countries.length);
     setPrizeNumber(index);
     setSpinning(true);
-    setSpinToken((t) => t + 1); // ✅ tell StableWheel to start with frozen props
+    setSpinToken((t) => t + 1); // trigger isolated wheel spin
   };
 
-  // Called only by StableWheel when animation ends
+  // Called by StableWheel after spin completes
   const onWheelFinished = async () => {
     setSpinning(false);
-
     await runTransaction(stateRef, (curr: GameState | null) => {
       if (!curr || !curr.currentSpinnerId) return curr;
       if (!curr.remainingPlayerIds.includes(curr.currentSpinnerId)) return curr;
       if (!curr.countries[prizeNumber]) return curr;
-
       const winningCountry = curr.countries[prizeNumber];
       const playerName = players[curr.currentSpinnerId]?.username || "Unknown";
       const nextRemaining = curr.remainingPlayerIds.filter(
         (id) => id !== curr.currentSpinnerId
       );
       const nextCountries = curr.countries.filter((_, i) => i !== prizeNumber);
-
       return {
         ...curr,
         countries: nextCountries,
@@ -293,6 +275,7 @@ export default function Page() {
         <span className="text-xs opacity-70">Room: test-room</span>
       </header>
 
+      {/* Lobby join section */}
       {!me && (
         <section className="card space-y-3">
           <h2 className="text-lg font-semibold">Join the lobby</h2>
@@ -328,6 +311,7 @@ export default function Page() {
         </section>
       )}
 
+      {/* Players list */}
       <section className="card space-y-3">
         <h2 className="text-lg font-semibold">
           Lobby · Players ({playerCount}/{GAME_SIZE})
@@ -362,6 +346,7 @@ export default function Page() {
         </div>
       </section>
 
+      {/* Game section */}
       {state?.started && (
         <section className="card space-y-4">
           <div className="flex items-center justify-between">
@@ -379,7 +364,6 @@ export default function Page() {
 
           <div className="flex flex-col items-center gap-3">
             <div className="w-full max-w-[360px]">
-              {/* ✅ CHANGED: use the isolated wheel */}
               <StableWheel
                 data={wheelData}
                 triggerToken={spinToken}
