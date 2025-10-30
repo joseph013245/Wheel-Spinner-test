@@ -36,7 +36,6 @@ interface Player {
 interface GameState {
   started: boolean;
   currentSpinnerId: string | null;
-  spinning: boolean;
   countries: { name: string; flag: string }[];
   remainingPlayerIds: string[];
   results: { playerName: string; country: string; flag: string }[];
@@ -57,64 +56,47 @@ export default function Page() {
   const [state, setState] = useState<GameState>({
     started: false,
     currentSpinnerId: null,
-    spinning: false,
     countries: INITIAL_COUNTRIES,
     remainingPlayerIds: [],
     results: [],
   });
   const [usernameInput, setUsernameInput] = useState("");
+  const [spinning, setSpinning] = useState(false);
   const [prizeNumber, setPrizeNumber] = useState(0);
-  const [spinningLocal, setSpinningLocal] = useState(false);
+  const [wheelKey, setWheelKey] = useState("static");
+  const [savedPlayer, setSavedPlayer] = useState<{ id: string; username: string } | null>(null);
 
-  // Load saved player from localStorage
+  // Load saved player
   useEffect(() => {
     const savedId = localStorage.getItem("wheelPlayerId");
     const savedName = localStorage.getItem("wheelUsername");
-    if (savedId && savedName)
-      setMe({ id: savedId, username: savedName, joinedAt: Date.now() });
+    if (savedId && savedName) setSavedPlayer({ id: savedId, username: savedName });
   }, []);
 
-  // Watch Firebase
-  useEffect(() => onValue(playersRef, (snap) => setPlayers(snap.val() || {})), []);
-  useEffect(() =>
-    onValue(stateRef, (snap) => {
-      const data =
-        snap.val() || {
-          started: false,
-          currentSpinnerId: null,
-          spinning: false,
-          countries: INITIAL_COUNTRIES,
-          remainingPlayerIds: [],
-          results: [],
-        };
-      setState(data);
-    }),
-    []
-  );
+  // Firebase sync
+  useEffect(() => onValue(playersRef, snap => setPlayers(snap.val() || {})), []);
+  useEffect(() => onValue(stateRef, snap => setState(snap.val() || {
+    started: false, currentSpinnerId: null, countries: INITIAL_COUNTRIES, remainingPlayerIds: [], results: []
+  })), []);
 
-  // Ensure room exists (but don't block other players from joining)
+  // Ensure room exists
   useEffect(() => {
-    const unsub = onValue(roomRef, async (snap) => {
-      const data = snap.val();
-      // If the room doesn't exist at all, create it
-      if (!data) {
+    const unsub = onValue(roomRef, snap => {
+      if (!snap.val()) {
         const initial: GameState = {
           started: false,
           currentSpinnerId: null,
-          spinning: false,
           countries: INITIAL_COUNTRIES,
           remainingPlayerIds: [],
           results: [],
         };
-        await set(roomRef, { state: initial, players: {} });
+        set(roomRef, { state: initial, players: {} });
       }
     });
     return () => unsub();
   }, []);
 
-  const playerCount = Object.keys(players || {}).length;
-
-  // Join
+  // Join (new player)
   const handleJoin = async () => {
     const username = usernameInput.trim().slice(0, 20);
     if (!username) return;
@@ -127,113 +109,119 @@ export default function Page() {
     setMe(player);
     localStorage.setItem("wheelPlayerId", meId);
     localStorage.setItem("wheelUsername", username);
+    setSavedPlayer({ id: meId, username });
   };
 
-  // Heartbeat system
+  // Rejoin (existing)
+  const handleRejoin = async () => {
+    if (!savedPlayer) return;
+    const snap = await get(ref(db, `rooms/${ROOM_ID}/players/${savedPlayer.id}`));
+    let player: Player;
+    if (snap.exists()) {
+      player = snap.val() as Player;
+    } else {
+      player = { id: savedPlayer.id, username: savedPlayer.username, joinedAt: Date.now(), lastSeen: Date.now() };
+      await set(ref(db, `rooms/${ROOM_ID}/players/${savedPlayer.id}`), player);
+    }
+    setMe(player);
+  };
+
+  // Heartbeat
   useEffect(() => {
     if (!me) return;
-    const interval = setInterval(() => {
+    const i = setInterval(() => {
       update(ref(db, `rooms/${ROOM_ID}/players/${me.id}`), { lastSeen: Date.now() });
     }, 5000);
-    return () => clearInterval(interval);
+    return () => clearInterval(i);
   }, [me]);
 
   const now = Date.now();
-  const onlinePlayerIds = Object.values(players)
-    .filter((p) => p.lastSeen && now - p.lastSeen < 15000)
-    .map((p) => p.id);
+  const onlinePlayerIds = useMemo(
+    () => Object.values(players).filter(p => p.lastSeen && now - p.lastSeen < 15000).map(p => p.id),
+    [players, now]
+  );
 
   // Start game
-  const canStart = !state.started && playerCount >= GAME_SIZE;
+  const canStart = !state.started && Object.keys(players).length >= GAME_SIZE;
   const handleStart = async () => {
     if (!canStart) return;
-    await set(stateRef, {
-      started: true,
-      currentSpinnerId: null,
-      spinning: false,
-      countries: INITIAL_COUNTRIES.slice(0, GAME_SIZE),
-      remainingPlayerIds: Object.keys(players),
-      results: [],
+    await runTransaction(stateRef, curr => {
+      if (!curr || curr.started) return curr;
+      const remainingPlayerIds = Object.keys(players);
+      return { ...curr, started: true, currentSpinnerId: null, remainingPlayerIds, countries: INITIAL_COUNTRIES, results: [] };
     });
   };
 
   // Auto-pick spinner
   useEffect(() => {
-    if (
-      state.started &&
-      !state.currentSpinnerId &&
-      !state.spinning &&
-      (state.remainingPlayerIds?.length || 0) > 0
-    ) {
-      const chosen = chooseRandom(state.remainingPlayerIds);
-      if (chosen) update(stateRef, { currentSpinnerId: chosen });
+    if (state.started && !state.currentSpinnerId && (state.remainingPlayerIds?.length || 0) > 0) {
+      runTransaction(stateRef, curr => {
+        if (!curr || !curr.started || curr.currentSpinnerId || !curr.remainingPlayerIds.length) return curr;
+        const chosen = chooseRandom(curr.remainingPlayerIds);
+        if (!chosen) return curr;
+        return { ...curr, currentSpinnerId: chosen };
+      });
     }
-  }, [state]);
+  }, [state.started, state.currentSpinnerId, state.remainingPlayerIds]);
 
   const amChosen = me && state.currentSpinnerId === me.id;
-  const wheelData = (state.countries || []).map((c) => ({ option: `${c.flag} ${c.name}` }));
 
-  // SPIN FUNCTION
+  const wheelData = useMemo(
+    () => Array.isArray(state.countries)
+      ? state.countries.map(c => ({ option: `${c.flag} ${c.name}` }))
+      : [],
+    [state.countries]
+  );
+
   const spin = async () => {
-    if (!amChosen || state.spinning) return;
-    const index = Math.floor(Math.random() * (state.countries?.length || 1));
-
-    // lock for everyone
-    await update(stateRef, { spinning: true });
-
-    // Local smooth spin
+    if (!amChosen || spinning) return;
+    const countries = state.countries || [];
+    if (!countries.length) return;
+    const index = Math.floor(Math.random() * countries.length);
     setPrizeNumber(index);
-    setSpinningLocal(true);
+    setWheelKey("spinning");
+    setSpinning(true);
   };
 
-  // AFTER spin stops
   const onStopSpinning = async () => {
-    setSpinningLocal(false);
-    const winningCountry = state.countries[prizeNumber];
-    if (!winningCountry) return;
-
-    // update firebase once wheel has stopped
-    await runTransaction(stateRef, (curr: GameState | null) => {
-      if (!curr) return curr;
-      const spinnerId = curr.currentSpinnerId;
-      if (!spinnerId) return curr;
-
-      const playerName = players[spinnerId]?.username || "Unknown";
-      const nextRemaining = curr.remainingPlayerIds.filter((id) => id !== spinnerId);
+    setSpinning(false);
+    setWheelKey("static");
+    await runTransaction(stateRef, curr => {
+      if (!curr || !curr.currentSpinnerId) return curr;
+      if (!curr.remainingPlayerIds.includes(curr.currentSpinnerId)) return curr;
+      if (!curr.countries[prizeNumber]) return curr;
+      const winningCountry = curr.countries[prizeNumber];
+      const playerName = players[curr.currentSpinnerId]?.username || "Unknown";
+      const nextRemaining = curr.remainingPlayerIds.filter(id => id !== curr.currentSpinnerId);
       const nextCountries = curr.countries.filter((_, i) => i !== prizeNumber);
-
       return {
         ...curr,
-        spinning: false,
         countries: nextCountries,
         remainingPlayerIds: nextRemaining,
         currentSpinnerId: null,
-        results: [
-          ...(curr.results || []),
-          { playerName, country: winningCountry.name, flag: winningCountry.flag },
-        ],
+        results: [...(curr.results || []), { playerName, country: winningCountry.name, flag: winningCountry.flag }],
       };
     });
   };
 
   const resetRoom = async () => {
     await remove(roomRef);
-    const initial: GameState = {
-      started: false,
-      currentSpinnerId: null,
-      spinning: false,
-      countries: INITIAL_COUNTRIES,
-      remainingPlayerIds: [],
-      results: [],
-    };
+    const initial: GameState = { started: false, currentSpinnerId: null, countries: INITIAL_COUNTRIES, remainingPlayerIds: [], results: [] };
     await set(roomRef, { state: initial, players: {} });
     setMe(null);
-    alert("Room has been reset.");
+    setPlayers({});
+    setState(initial);
+    alert("Room reset!");
   };
 
-  const currentSpinnerName = state.currentSpinnerId
-    ? players[state.currentSpinnerId]?.username || "Unknown"
-    : null;
+  const currentSpinnerName = useMemo(() => {
+    const id = state.currentSpinnerId;
+    if (!id) return null;
+    const player = players[id];
+    if (!player) return "(previous player)";
+    const isOnline = onlinePlayerIds.includes(id);
+    return `${player.username}${isOnline ? "" : " (offline)"}`;
+  }, [state.currentSpinnerId, players, onlinePlayerIds]);
 
   const gameOver = state.started && (state.results?.length || 0) >= GAME_SIZE;
 
@@ -247,122 +235,96 @@ export default function Page() {
       {!me && (
         <section className="card space-y-3">
           <h2 className="text-lg font-semibold">Join the lobby</h2>
+          {savedPlayer && (
+            <>
+              <div className="p-3 border rounded-md bg-gray-100 dark:bg-neutral-800">
+                <p className="text-sm mb-2">Welcome back, <b>{savedPlayer.username}</b>!</p>
+                <button className="btn btn-primary w-full" onClick={handleRejoin}>
+                  Rejoin as {savedPlayer.username}
+                </button>
+              </div>
+              <div className="text-center text-xs opacity-60 my-2">— or join as a new player —</div>
+            </>
+          )}
           <div className="flex gap-2">
             <input
               className="input"
-              placeholder="Enter a username"
+              placeholder="Enter a username (new player)"
               value={usernameInput}
               onChange={(e) => setUsernameInput(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && handleJoin()}
             />
-            <button className="btn btn-primary" onClick={handleJoin}>
-              Join
-            </button>
+            <button className="btn btn-primary" onClick={handleJoin}>Join</button>
           </div>
         </section>
       )}
 
       <section className="card space-y-3">
-        <h2 className="text-lg font-semibold">
-          Lobby · Players ({playerCount}/{GAME_SIZE})
-        </h2>
+        <h2 className="text-lg font-semibold">Lobby · Players ({Object.keys(players).length}/{GAME_SIZE})</h2>
         <div className="flex flex-wrap gap-2">
-          {Object.values(players).map((p) => (
-            <div
-              key={p.id}
-              className={`px-3 py-1 rounded-full ${
-                onlinePlayerIds.includes(p.id)
-                  ? "bg-green-200 text-green-900 dark:bg-green-700"
-                  : "bg-gray-100 dark:bg-neutral-800 opacity-60"
-              }`}
-            >
-              {p.username}
-            </div>
-          ))}
+          {Object.values(players).map((p) => {
+            const online = onlinePlayerIds.includes(p.id);
+            return (
+              <div
+                key={p.id}
+                className={`px-3 py-1 rounded-full ${online ? "bg-green-200 text-green-900 dark:bg-green-700" : "bg-gray-100 dark:bg-neutral-800 opacity-60"}`}
+              >
+                {p.username}
+              </div>
+            );
+          })}
         </div>
-        <div className="flex gap-2">
-          <button
-            className="btn btn-primary"
-            disabled={!canStart}
-            onClick={handleStart}
-          >
+        <div className="flex items-center gap-2">
+          <button className="btn btn-primary" disabled={!canStart} onClick={handleStart}>
             Start game
           </button>
-          <button className="btn btn-secondary" onClick={resetRoom}>
-            Reset Game
-          </button>
+          <button className="btn btn-secondary" onClick={resetRoom}>Reset Game</button>
         </div>
       </section>
 
       {state.started && (
         <section className="card space-y-4">
-          {!gameOver && (
-            <>
-              <div className="text-center font-semibold">
-                {state.spinning
-                  ? "🌀 Wheel spinning…"
-                  : currentSpinnerName
-                  ? `🎯 It's ${currentSpinnerName}'s turn!`
-                  : "Waiting for spinner..."}
+          <div className="flex items-center justify-between">
+            <h2 className="text-lg font-semibold">Game</h2>
+            <div className="text-sm opacity-70">
+              Remaining: {state.countries.length} countries · {state.remainingPlayerIds.length} players
+            </div>
+          </div>
+
+          <div className="text-sm">Chosen to spin: <span className="font-semibold">{currentSpinnerName || "(waiting)"}</span></div>
+
+          {!gameOver && state.countries.length > 0 && (
+            <div className="flex flex-col items-center gap-3">
+              <div className="w-full max-w-[360px]">
+                <Wheel
+                  key={wheelKey}
+                  mustStartSpinning={spinning}
+                  prizeNumber={prizeNumber}
+                  data={wheelData}
+                  onStopSpinning={onStopSpinning}
+                  outerBorderColor={"#111"}
+                  radiusLineColor={"#333"}
+                  fontSize={14}
+                />
               </div>
-
-              {state.countries.length > 0 && (
-                <div className="flex flex-col items-center gap-3">
-                  <div className="w-full max-w-[360px]">
-                    <Wheel
-                      mustStartSpinning={spinningLocal}
-                      prizeNumber={prizeNumber}
-                      data={wheelData}
-                      onStopSpinning={onStopSpinning}
-                      outerBorderColor="#111"
-                      radiusLineColor="#333"
-                      fontSize={14}
-                    />
-                  </div>
-                  <button
-                    className="btn btn-primary"
-                    onClick={spin}
-                    disabled={!amChosen || state.spinning || spinningLocal}
-                  >
-                    {amChosen
-                      ? spinningLocal
-                        ? "Spinning..."
-                        : "Spin the wheel"
-                      : "Waiting..."}
-                  </button>
-                </div>
-              )}
-            </>
-          )}
-
-          {gameOver && (
-            <div className="text-center text-sm opacity-80">
-              🎉 Game complete! Final results below.
+              <button className="btn btn-primary" onClick={spin} disabled={!amChosen || spinning}>
+                {amChosen ? (spinning ? "Spinning…" : "Spin the wheel") : "Waiting for spinner"}
+              </button>
             </div>
           )}
 
-          <div className="overflow-x-auto mt-4">
+          <div className="overflow-x-auto">
             <table className="table">
-              <thead>
-                <tr>
-                  <th>Player</th>
-                  <th>Result</th>
-                </tr>
-              </thead>
-              <tbody>
-                {(state.results ?? []).map((r, i) => (
-                  <tr key={i}>
-                    <td>{r.playerName}</td>
-                    <td>
-                      {r.flag} {r.country}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
+              <thead><tr><th>Player</th><th>Result</th></tr></thead>
+              <tbody>{(state.results || []).map((r, i) => <tr key={i}><td>{r.playerName}</td><td>{r.flag} {r.country}</td></tr>)}</tbody>
             </table>
           </div>
+
+          {gameOver && <div className="text-center text-sm opacity-80">🎉 Game complete! Refresh or reset to play again.</div>}
         </section>
       )}
+
+      <footer className="text-center text-xs opacity-60 py-4">Works great on mobile — share this URL with testers.</footer>
     </main>
   );
 }
