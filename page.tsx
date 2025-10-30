@@ -52,14 +52,14 @@ export default function Page() {
   const [prizeNumber, setPrizeNumber] = useState(0);
   const [savedPlayer, setSavedPlayer] = useState<{ id: string; username: string } | null>(null);
 
-  // 🧠 Load saved player from localStorage
+  // Load saved player from localStorage
   useEffect(() => {
     const savedId = localStorage.getItem("wheelPlayerId");
     const savedName = localStorage.getItem("wheelUsername");
     if (savedId && savedName) setSavedPlayer({ id: savedId, username: savedName });
   }, []);
 
-  // Watch Firebase
+  // Watch Firebase state
   useEffect(() => onValue(playersRef, (snap) => setPlayers(snap.val() || {})), []);
   useEffect(() => onValue(stateRef, (snap) => setState(snap.val() || {
     started: false,
@@ -88,7 +88,7 @@ export default function Page() {
 
   const playerCount = useMemo(() => Object.keys(players || {}).length, [players]);
 
-  // ✅ Join (new player)
+  // Join (new player)
   const handleJoin = async () => {
     const username = usernameInput.trim().slice(0, 20);
     if (!username) return;
@@ -103,20 +103,19 @@ export default function Page() {
     setSavedPlayer({ id: meId, username });
   };
 
-  // ✅ Rejoin (existing player)
+  // Rejoin (existing player)
   const handleRejoin = async () => {
     if (!savedPlayer) return;
     const playerSnap = await get(ref(db, `rooms/${ROOM_ID}/players/${savedPlayer.id}`));
+    let player: Player;
     if (playerSnap.exists()) {
-      const player = playerSnap.val() as Player;
-      setMe(player);
+      player = playerSnap.val() as Player;
     } else {
-      // If their record was removed (e.g., from disconnect timeout), re-add them
-      const player: Player = { id: savedPlayer.id, username: savedPlayer.username, joinedAt: Date.now() };
+      player = { id: savedPlayer.id, username: savedPlayer.username, joinedAt: Date.now() };
       await set(ref(db, `rooms/${ROOM_ID}/players/${savedPlayer.id}`), player);
-      onDisconnect(ref(db, `rooms/${ROOM_ID}/players/${savedPlayer.id}`)).remove();
-      setMe(player);
     }
+    onDisconnect(ref(db, `rooms/${ROOM_ID}/players/${savedPlayer.id}`)).remove();
+    setMe(player);
   };
 
   // Start game
@@ -149,9 +148,16 @@ export default function Page() {
     }
   }, [state?.started, state?.currentSpinnerId, state?.remainingPlayerIds]);
 
+  // ✅ NEW: auto-enable spin if player rejoins and it's their turn
+  useEffect(() => {
+    if (me && state?.currentSpinnerId === me.id && !spinning) {
+      console.log("Rejoined during your turn — spin enabled");
+    }
+  }, [me, state?.currentSpinnerId]);
+
   const amChosen = me && state?.currentSpinnerId === me.id;
 
-  // Spin logic
+  // Wheel logic
   const wheelData = useMemo(
     () => (Array.isArray(state?.countries) ? state.countries.map(c => ({ option: `${c.flag} ${c.name}` })) : []),
     [state?.countries]
