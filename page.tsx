@@ -39,6 +39,8 @@ interface GameState {
   countries: { name: string; flag: string }[];
   remainingPlayerIds: string[];
   results: { playerName: string; country: string; flag: string }[];
+  spinning?: boolean;
+  prizeNumber?: number | null;
 }
 
 const roomRef = ref(db, `rooms/${ROOM_ID}`);
@@ -59,6 +61,8 @@ export default function Page() {
     countries: INITIAL_COUNTRIES,
     remainingPlayerIds: [],
     results: [],
+    spinning: false,
+    prizeNumber: null,
   });
   const [usernameInput, setUsernameInput] = useState("");
   const [spinning, setSpinning] = useState(false);
@@ -81,6 +85,7 @@ export default function Page() {
       setPlayers(data);
     });
   }, []);
+
   useEffect(() => {
     return onValue(stateRef, (snap) => {
       const data = snap.val() || {
@@ -89,6 +94,8 @@ export default function Page() {
         countries: INITIAL_COUNTRIES,
         remainingPlayerIds: [],
         results: [],
+        spinning: false,
+        prizeNumber: null,
       };
       setState(data);
     });
@@ -104,6 +111,8 @@ export default function Page() {
           countries: INITIAL_COUNTRIES,
           remainingPlayerIds: [],
           results: [],
+          spinning: false,
+          prizeNumber: null,
         };
         set(roomRef, { state: initial, players: {} });
       }
@@ -185,6 +194,8 @@ export default function Page() {
         remainingPlayerIds,
         countries: curr.countries.slice(0, GAME_SIZE),
         results: [],
+        spinning: false,
+        prizeNumber: null,
       };
     });
   };
@@ -202,6 +213,16 @@ export default function Page() {
     }
   }, [state?.started, state?.currentSpinnerId, state?.remainingPlayerIds]);
 
+  // 🔁 Sync spin across all players
+  useEffect(() => {
+    if (state?.spinning && typeof state.prizeNumber === "number") {
+      setPrizeNumber(state.prizeNumber);
+      setSpinning(true);
+    } else {
+      setSpinning(false);
+    }
+  }, [state?.spinning, state?.prizeNumber]);
+
   const amChosen = me && state?.currentSpinnerId === me.id;
 
   // Wheel logic
@@ -213,34 +234,46 @@ export default function Page() {
     [state?.countries]
   );
 
+  // 🎡 Spin
   const spin = async () => {
     if (!amChosen || spinning) return;
     const countries = state?.countries || [];
     if (!countries.length) return;
+
     const index = Math.floor(Math.random() * countries.length);
+
+    // Sync to Firebase so everyone sees same spin
+    await update(stateRef, { spinning: true, prizeNumber: index });
+
+    // Locally animate
     setPrizeNumber(index);
     setSpinning(true);
   };
 
+  // 🛑 Stop spinning
   const onStopSpinning = async () => {
     setSpinning(false);
     await runTransaction(stateRef, (curr: GameState | null) => {
       if (!curr || !curr.currentSpinnerId) return curr;
       if (!curr.remainingPlayerIds.includes(curr.currentSpinnerId)) return curr;
-      if (!curr.countries[prizeNumber]) return curr;
+      if (!curr.countries[curr.prizeNumber ?? 0]) return curr;
 
-      const winningCountry = curr.countries[prizeNumber];
+      const winningCountry = curr.countries[curr.prizeNumber ?? 0];
       const playerName = players[curr.currentSpinnerId]?.username || "Unknown";
       const nextRemaining = curr.remainingPlayerIds.filter(
         (id) => id !== curr.currentSpinnerId
       );
-      const nextCountries = curr.countries.filter((_, i) => i !== prizeNumber);
+      const nextCountries = curr.countries.filter(
+        (_, i) => i !== (curr.prizeNumber ?? 0)
+      );
 
       return {
         ...curr,
         countries: nextCountries,
         remainingPlayerIds: nextRemaining,
         currentSpinnerId: null,
+        spinning: false,
+        prizeNumber: null,
         results: [
           ...(curr.results || []),
           { playerName, country: winningCountry.name, flag: winningCountry.flag },
@@ -249,6 +282,7 @@ export default function Page() {
     });
   };
 
+  // Reset everything
   const resetRoom = async () => {
     await remove(roomRef);
     const initial: GameState = {
@@ -257,6 +291,8 @@ export default function Page() {
       countries: INITIAL_COUNTRIES,
       remainingPlayerIds: [],
       results: [],
+      spinning: false,
+      prizeNumber: null,
     };
     await set(roomRef, { state: initial, players: {} });
     setMe(null);
@@ -369,29 +405,37 @@ export default function Page() {
           </div>
 
           <div className="flex flex-col items-center gap-3">
-            <div className="w-full max-w-[360px]">
-              <Wheel
-                key={wheelData.map((d) => d.option).join("|")}
-                mustStartSpinning={spinning}
-                prizeNumber={prizeNumber}
-                data={wheelData}
-                onStopSpinning={onStopSpinning}
-                outerBorderColor={"#111"}
-                radiusLineColor={"#333"}
-                fontSize={14}
-              />
-            </div>
-            <button
-              className="btn btn-primary"
-              onClick={spin}
-              disabled={!amChosen || spinning || gameOver || (state?.countries?.length ?? 0) === 0}
-            >
-              {amChosen
-                ? spinning
-                  ? "Spinning…"
-                  : "Spin the wheel"
-                : "Waiting for spinner"}
-            </button>
+            {state.countries?.length ? (
+              <>
+                <div className="w-full max-w-[360px]">
+                  <Wheel
+                    key="static-wheel"
+                    mustStartSpinning={spinning}
+                    prizeNumber={prizeNumber}
+                    data={wheelData}
+                    onStopSpinning={onStopSpinning}
+                    outerBorderColor={"#111"}
+                    radiusLineColor={"#333"}
+                    fontSize={14}
+                  />
+                </div>
+                <button
+                  className="btn btn-primary"
+                  onClick={spin}
+                  disabled={!amChosen || spinning || gameOver || (state?.countries?.length ?? 0) === 0}
+                >
+                  {amChosen
+                    ? spinning
+                      ? "Spinning…"
+                      : "Spin the wheel"
+                    : "Waiting for spinner"}
+                </button>
+              </>
+            ) : (
+              <div className="text-center text-sm opacity-80">
+                🎉 Game complete! You can reset to play again.
+              </div>
+            )}
           </div>
 
           <div className="overflow-x-auto">
