@@ -12,7 +12,6 @@ import {
 } from "firebase/database";
 import { db } from "@/lib/firebase";
 import StableWheel from "./StableWheel";
-import PigCelebration from "./PigCelebration";
 
 const GAME_SIZE = 3;
 const INITIAL_COUNTRIES = [
@@ -60,7 +59,6 @@ export default function Page() {
   const [spinning, setSpinning] = useState(false);
   const [prizeNumber, setPrizeNumber] = useState(0);
   const [spinToken, setSpinToken] = useState(0); // triggers StableWheel spin
-  const [showPigs, setShowPigs] = useState(false); // 🐷 celebration flag
   const [savedPlayer, setSavedPlayer] = useState<{ id: string; username: string } | null>(null);
 
   // Load saved player from localStorage
@@ -72,7 +70,10 @@ export default function Page() {
 
   // Watch Firebase data
   useEffect(() => {
-    return onValue(playersRef, (snap) => setPlayers(snap.val() || {}));
+    return onValue(playersRef, (snap) => {
+      const data = snap.val() || {};
+      setPlayers(data);
+    });
   }, []);
   useEffect(() => {
     return onValue(stateRef, (snap) => {
@@ -139,6 +140,7 @@ export default function Page() {
       };
       await set(ref(db, `rooms/${ROOM_ID}/players/${savedPlayer.id}`), player);
     }
+
     setMe(player);
   };
 
@@ -194,14 +196,15 @@ export default function Page() {
 
   const amChosen = me && state?.currentSpinnerId === me.id;
 
-  // Wheel data
+  // ✅ Safe wheel data
   const wheelData = useMemo(() => {
-    if (!Array.isArray(state?.countries) || state.countries.length === 0)
+    if (!Array.isArray(state?.countries) || state.countries.length === 0) {
       return [{ option: "🎡 Waiting…" }];
+    }
     return state.countries.map((c) => ({ option: `${c.flag} ${c.name}` }));
   }, [state?.countries]);
 
-  // Spin handler
+  // Spin button handler
   const spin = async () => {
     if (!amChosen || spinning) return;
     const countries = state?.countries || [];
@@ -209,29 +212,22 @@ export default function Page() {
     const index = Math.floor(Math.random() * countries.length);
     setPrizeNumber(index);
     setSpinning(true);
-    setSpinToken((t) => t + 1);
+    setSpinToken((t) => t + 1); // trigger isolated wheel spin
   };
 
-  // When wheel finishes
+  // Called by StableWheel after spin completes
   const onWheelFinished = async () => {
     setSpinning(false);
-
-    // 🐷 Trigger pigs for each spin
-    setShowPigs(true);
-    setTimeout(() => setShowPigs(false), 4000);
-
     await runTransaction(stateRef, (curr: GameState | null) => {
       if (!curr || !curr.currentSpinnerId) return curr;
       if (!curr.remainingPlayerIds.includes(curr.currentSpinnerId)) return curr;
       if (!curr.countries[prizeNumber]) return curr;
-
       const winningCountry = curr.countries[prizeNumber];
       const playerName = players[curr.currentSpinnerId]?.username || "Unknown";
       const nextRemaining = curr.remainingPlayerIds.filter(
         (id) => id !== curr.currentSpinnerId
       );
       const nextCountries = curr.countries.filter((_, i) => i !== prizeNumber);
-
       return {
         ...curr,
         countries: nextCountries,
@@ -270,10 +266,7 @@ export default function Page() {
     return `${player.username}${isOnline ? "" : " (offline)"}`;
   }, [state?.currentSpinnerId, players, onlinePlayerIds]);
 
-  const gameOver =
-    state?.started &&
-    (state?.results?.length || 0) >= GAME_SIZE &&
-    state?.remainingPlayerIds?.length === 0;
+  const gameOver = state?.started && (state?.results?.length || 0) >= GAME_SIZE;
 
   return (
     <main className="container space-y-6">
@@ -282,6 +275,7 @@ export default function Page() {
         <span className="text-xs opacity-70">Room: test-room</span>
       </header>
 
+      {/* Lobby join section */}
       {!me && (
         <section className="card space-y-3">
           <h2 className="text-lg font-semibold">Join the lobby</h2>
@@ -317,6 +311,7 @@ export default function Page() {
         </section>
       )}
 
+      {/* Players list */}
       <section className="card space-y-3">
         <h2 className="text-lg font-semibold">
           Lobby · Players ({playerCount}/{GAME_SIZE})
@@ -351,6 +346,7 @@ export default function Page() {
         </div>
       </section>
 
+      {/* Game section */}
       {state?.started && (
         <section className="card space-y-4">
           <div className="flex items-center justify-between">
@@ -366,29 +362,29 @@ export default function Page() {
             <span className="font-semibold">{currentSpinnerName || "(waiting)"}</span>
           </div>
 
-          {!gameOver && (
-            <div className="flex flex-col items-center gap-3">
-              <div className="w-full max-w-[360px]">
-                <StableWheel
-                  data={wheelData}
-                  triggerToken={spinToken}
-                  prizeNumber={prizeNumber}
-                  onFinished={onWheelFinished}
-                />
-              </div>
-              <button
-                className="btn btn-primary"
-                onClick={spin}
-                disabled={!amChosen || spinning || gameOver || (state?.countries?.length ?? 0) === 0}
-              >
-                {amChosen
-                  ? spinning
-                    ? "Spinning…"
-                    : "Spin the wheel"
-                  : "Waiting for spinner"}
-              </button>
+          <div className="flex flex-col items-center gap-3">
+            <div className="w-full max-w-[360px]">
+              <StableWheel
+                data={wheelData}
+                triggerToken={spinToken}
+                prizeNumber={prizeNumber}
+                onFinished={onWheelFinished}
+                gameOver={gameOver} // 👈 add this line
+              />
             </div>
-          )}
+
+            <button
+              className="btn btn-primary"
+              onClick={spin}
+              disabled={!amChosen || spinning || gameOver || (state?.countries?.length ?? 0) === 0}
+            >
+              {amChosen
+                ? spinning
+                  ? "Spinning…"
+                  : "Spin the wheel"
+                : "Waiting for spinner"}
+            </button>
+          </div>
 
           <div className="overflow-x-auto">
             <table className="table">
@@ -418,8 +414,6 @@ export default function Page() {
           )}
         </section>
       )}
-
-      {showPigs && <PigCelebration />}
 
       <footer className="text-center text-xs opacity-60 py-4">
         Works great on mobile — share this URL with testers.
