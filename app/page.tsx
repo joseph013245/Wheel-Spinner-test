@@ -369,6 +369,7 @@ export default function Page() {
                 triggerToken={spinToken}
                 prizeNumber={prizeNumber}
                 onFinished={onWheelFinished}
+                gameOver={gameOver} // 👈 add this line
               />
             </div>
 
