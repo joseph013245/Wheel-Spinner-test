@@ -92,10 +92,12 @@ export default function Page() {
     []
   );
 
-  // Ensure room exists
+  // Ensure room exists (but don't block other players from joining)
   useEffect(() => {
-    const off = onValue(roomRef, (snap) => {
-      if (!snap.val()) {
+    const unsub = onValue(roomRef, async (snap) => {
+      const data = snap.val();
+      // If the room doesn't exist at all, create it
+      if (!data) {
         const initial: GameState = {
           started: false,
           currentSpinnerId: null,
@@ -104,10 +106,10 @@ export default function Page() {
           remainingPlayerIds: [],
           results: [],
         };
-        set(roomRef, { state: initial, players: {} });
+        await set(roomRef, { state: initial, players: {} });
       }
     });
-    return () => off();
+    return () => unsub();
   }, []);
 
   const playerCount = Object.keys(players || {}).length;
