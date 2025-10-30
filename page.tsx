@@ -40,7 +40,7 @@ interface GameState {
   remainingPlayerIds: string[];
   results: { playerName: string; country: string; flag: string }[];
   spinning?: boolean;
-  prizeNumber?: number;
+  prizeNumber?: number | null;
   lastSpinAt?: number;
 }
 
@@ -56,19 +56,11 @@ function chooseRandom<T>(arr: T[]): T | null {
 export default function Page() {
   const [me, setMe] = useState<Player | null>(null);
   const [players, setPlayers] = useState<Record<string, Player>>({});
-  const [state, setState] = useState<GameState>({
-    started: false,
-    currentSpinnerId: null,
-    countries: INITIAL_COUNTRIES,
-    remainingPlayerIds: [],
-    results: [],
-  });
+  const [state, setState] = useState<GameState | null>(null);
   const [usernameInput, setUsernameInput] = useState("");
   const [spinning, setSpinning] = useState(false);
   const [prizeNumber, setPrizeNumber] = useState(0);
-  const [savedPlayer, setSavedPlayer] = useState<{ id: string; username: string } | null>(
-    null
-  );
+  const [savedPlayer, setSavedPlayer] = useState<{ id: string; username: string } | null>(null);
 
   const wheelRef = useRef<any>(null);
 
@@ -81,7 +73,7 @@ export default function Page() {
 
   // Firebase listeners
   useEffect(() => onValue(playersRef, (snap) => setPlayers(snap.val() || {})), []);
-  useEffect(() => onValue(stateRef, (snap) => setState(snap.val() || {})), []);
+  useEffect(() => onValue(stateRef, (snap) => setState(snap.val() || null)), []);
 
   // Ensure room exists
   useEffect(() => {
@@ -146,39 +138,42 @@ export default function Page() {
     setMe(player);
   };
 
-  // Start game
   const playerCount = Object.keys(players || {}).length;
   const canStart = !state?.started && playerCount >= GAME_SIZE;
+
+  // ✅ FIXED: safer handleStart with array guard
   const handleStart = async () => {
     if (!canStart) return;
     await runTransaction(stateRef, (curr: GameState | null) => {
       if (!curr || curr.started) return curr;
+      const safeCountries = Array.isArray(curr.countries) ? curr.countries : INITIAL_COUNTRIES;
       const remainingPlayerIds = Object.keys(players || {});
       return {
         ...curr,
         started: true,
         currentSpinnerId: null,
         remainingPlayerIds,
-        countries: curr.countries.slice(0, GAME_SIZE),
+        countries: safeCountries.slice(0, GAME_SIZE),
         results: [],
+        spinning: false,
+        prizeNumber: null,
       };
     });
   };
 
-  // Auto choose spinner
+  // ✅ Auto choose spinner
   useEffect(() => {
-    if (state?.started && !state?.currentSpinnerId && (state?.remainingPlayerIds?.length || 0) > 0) {
-      runTransaction(stateRef, (curr: GameState | null) => {
-        if (!curr || curr.currentSpinnerId) return curr;
-        const chosen = chooseRandom(curr.remainingPlayerIds);
-        return { ...curr, currentSpinnerId: chosen };
-      });
-    }
-  }, [state?.started, state?.currentSpinnerId, state?.remainingPlayerIds]);
+    if (!state?.started || state?.currentSpinnerId || spinning) return;
+    runTransaction(stateRef, (curr: GameState | null) => {
+      if (!curr || curr.currentSpinnerId || curr.spinning) return curr;
+      const chosen = chooseRandom(curr.remainingPlayerIds || []);
+      return { ...curr, currentSpinnerId: chosen };
+    });
+  }, [state?.started, state?.currentSpinnerId, state?.remainingPlayerIds, spinning]);
 
   const amChosen = me && state?.currentSpinnerId === me.id;
 
-  // Spin sync: local reaction to DB updates
+  // ✅ Sync spin start for all players
   useEffect(() => {
     if (state?.spinning && typeof state.prizeNumber === "number") {
       setPrizeNumber(state.prizeNumber);
@@ -196,13 +191,12 @@ export default function Page() {
     [state?.countries]
   );
 
-  // Spin function
+  // ✅ Only current spinner can trigger spin once
   const spin = async () => {
     if (!amChosen || spinning) return;
-    const countries = state?.countries || [];
+    const countries = Array.isArray(state?.countries) ? state.countries : [];
     if (!countries.length) return;
     const index = Math.floor(Math.random() * countries.length);
-
     await update(stateRef, {
       spinning: true,
       prizeNumber: index,
@@ -210,16 +204,19 @@ export default function Page() {
     });
   };
 
+  // ✅ Unified end-spin for everyone (no double writes)
   const onStopSpinning = async () => {
+    if (!state?.spinning) return;
     await runTransaction(stateRef, (curr: GameState | null) => {
       if (!curr || !curr.currentSpinnerId) return curr;
-      if (!curr.countries[curr.prizeNumber ?? 0]) return curr;
+      const safeCountries = Array.isArray(curr.countries) ? curr.countries : [];
+      if (!safeCountries.length || curr.prizeNumber == null) return curr;
 
-      const winningCountry = curr.countries[curr.prizeNumber ?? 0];
+      const winningCountry = safeCountries[curr.prizeNumber];
       const playerName = players[curr.currentSpinnerId]?.username || "Unknown";
 
-      const nextRemaining = curr.remainingPlayerIds.filter((id) => id !== curr.currentSpinnerId);
-      const nextCountries = curr.countries.filter((_, i) => i !== (curr.prizeNumber ?? 0));
+      const nextRemaining = (curr.remainingPlayerIds || []).filter((id) => id !== curr.currentSpinnerId);
+      const nextCountries = safeCountries.filter((_, i) => i !== curr.prizeNumber);
 
       return {
         ...curr,
@@ -283,10 +280,7 @@ export default function Page() {
                   Rejoin as {savedPlayer.username}
                 </button>
               </div>
-
-              <div className="text-center text-xs opacity-60 my-2">
-                — or join as a new player —
-              </div>
+              <div className="text-center text-xs opacity-60 my-2">— or join as a new player —</div>
             </>
           ) : null}
 
