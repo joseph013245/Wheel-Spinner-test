@@ -1,5 +1,5 @@
 "use client";
-import React, { useEffect, useMemo, useState, memo } from "react";
+import React, { useEffect, useMemo, useRef, useState, memo } from "react";
 import {
   ref,
   onValue,
@@ -13,7 +13,6 @@ import {
 import { db } from "@/lib/firebase";
 import dynamic from "next/dynamic";
 
-// Dynamically import roulette
 const Wheel = dynamic(
   () => import("react-custom-roulette").then((m) => m.Wheel),
   { ssr: false }
@@ -52,7 +51,7 @@ function chooseRandom<T>(arr: T[]): T | null {
   return arr[Math.floor(Math.random() * arr.length)];
 }
 
-// 🔒 Stable wheel component that doesn’t re-render unless needed
+// Stable memoized wheel to avoid React re-renders
 const StableWheel = memo(function StableWheel({
   spinning,
   prizeNumber,
@@ -90,10 +89,14 @@ export default function Page() {
   });
   const [usernameInput, setUsernameInput] = useState("");
   const [spinning, setSpinning] = useState(false);
-  const [prizeNumber, setPrizeNumber] = useState(0);
   const [savedPlayer, setSavedPlayer] = useState<{ id: string; username: string } | null>(
     null
   );
+
+  // 🧠 NEW freeze logic
+  const [wheelData, setWheelData] = useState<{ option: string }[]>([]);
+  const [currentPrize, setCurrentPrize] = useState<number>(0);
+  const spinLockRef = useRef(false);
 
   // Load saved player from localStorage
   useEffect(() => {
@@ -102,15 +105,13 @@ export default function Page() {
     if (savedId && savedName) setSavedPlayer({ id: savedId, username: savedName });
   }, []);
 
-  // Watch Firebase players
+  // Watch Firebase data
   useEffect(() => {
     return onValue(playersRef, (snap) => {
       const data = snap.val() || {};
       setPlayers(data);
     });
   }, []);
-
-  // Watch Firebase game state
   useEffect(() => {
     return onValue(stateRef, (snap) => {
       const data = snap.val() || {
@@ -248,49 +249,52 @@ export default function Page() {
 
   const amChosen = me && state?.currentSpinnerId === me.id;
 
-  // ✅ Stable wheel data
-  const wheelData = useMemo(() => {
-    if (!Array.isArray(state?.countries)) return [];
-    return state.countries.map((c) => ({ option: `${c.flag} ${c.name}` }));
-  }, [JSON.stringify(state?.countries)]);
+  // 🧊 Freeze wheel data while spinning
+  useEffect(() => {
+    if (!Array.isArray(state?.countries)) return;
+    if (!spinLockRef.current) {
+      setWheelData(state.countries.map((c) => ({ option: `${c.flag} ${c.name}` })));
+    }
+  }, [state?.countries]);
 
-  // 🎡 Spin logic
   const spin = async () => {
     if (!amChosen || spinning || state.spinning) return;
     const countries = state?.countries || [];
     if (!countries.length) return;
     const index = Math.floor(Math.random() * countries.length);
 
-    // 🔒 Lock spinning
+    spinLockRef.current = true;
+    setCurrentPrize(index);
+    setSpinning(true);
+
     await runTransaction(stateRef, (curr: GameState | null) => {
       if (!curr || curr.spinning) return curr;
       return { ...curr, spinning: true };
     });
-
-    setPrizeNumber(index);
-    setSpinning(true);
   };
 
   const onStopSpinning = async () => {
     setSpinning(false);
+    spinLockRef.current = false;
+
     await runTransaction(stateRef, (curr: GameState | null) => {
       if (!curr || !curr.currentSpinnerId) return curr;
       if (!curr.remainingPlayerIds.includes(curr.currentSpinnerId)) return curr;
-      if (!curr.countries[prizeNumber]) return { ...curr, spinning: false };
+      if (!curr.countries[currentPrize]) return { ...curr, spinning: false };
 
-      const winningCountry = curr.countries[prizeNumber];
+      const winningCountry = curr.countries[currentPrize];
       const playerName = players[curr.currentSpinnerId]?.username || "Unknown";
       const nextRemaining = curr.remainingPlayerIds.filter(
         (id) => id !== curr.currentSpinnerId
       );
-      const nextCountries = curr.countries.filter((_, i) => i !== prizeNumber);
+      const nextCountries = curr.countries.filter((_, i) => i !== currentPrize);
 
       return {
         ...curr,
         countries: nextCountries,
         remainingPlayerIds: nextRemaining,
         currentSpinnerId: null,
-        spinning: false, // 🔓 unlock
+        spinning: false,
         results: [
           ...(curr.results || []),
           { playerName, country: winningCountry.name, flag: winningCountry.flag },
@@ -426,7 +430,7 @@ export default function Page() {
             <div className="w-full max-w-[360px]">
               <StableWheel
                 spinning={spinning}
-                prizeNumber={prizeNumber}
+                prizeNumber={currentPrize}
                 wheelData={wheelData}
                 onStopSpinning={onStopSpinning}
               />
