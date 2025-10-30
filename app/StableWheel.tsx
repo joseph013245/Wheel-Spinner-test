@@ -7,7 +7,7 @@ type Props = {
   triggerToken: number;
   prizeNumber: number;
   onFinished: () => void;
-  gameOver?: boolean; // 👈 Added to hide wheel when done
+  gameOver?: boolean;
 };
 
 export default function StableWheel({
@@ -22,7 +22,6 @@ export default function StableWheel({
   const wheelRef = useRef<HTMLDivElement>(null);
   const lastToken = useRef(0);
 
-  // 🌀 Handle spin
   useEffect(() => {
     if (triggerToken === 0 || triggerToken === lastToken.current) return;
     if (!data || data.length === 0) return;
@@ -53,52 +52,34 @@ export default function StableWheel({
     );
   }
 
-  // 🏁 Hide wheel once the game is over
-  if (gameOver) {
-    return null;
-  }
+  if (gameOver) return null;
 
   const segAngle = 360 / data.length;
   const radius = 150;
 
-  // 🇯🇵🇧🇷🇨🇦 flag-inspired gradients
-  const flagGradients: Record<string, string> = {
-    Japan: "conic-gradient(from 0deg, white 0deg 340deg, red 340deg 360deg)",
-    Brazil:
-      "conic-gradient(from 0deg, #009739 0deg 240deg, #FFDF00 240deg 300deg, #002776 300deg 360deg)",
-    Canada:
-      "conic-gradient(from 0deg, #FF0000 0deg 120deg, white 120deg 240deg, #FF0000 240deg 360deg)",
+  // 🎨 Flag color palette (simplified but vibrant)
+  const countryColors: Record<string, string> = {
+    Japan: "#ffffff",
+    Brazil: "#009739",
+    Canada: "#ff0000",
   };
 
-  // fallback colors
+  // fallback vibrant palette
   const fallbackColors = [
-    "#FFD95A",
-    "#FFB347",
-    "#A0C4FF",
-    "#FFADAD",
-    "#B5E48C",
-    "#F9C74F",
+    "#FF6B6B", "#FFD93D", "#6BCB77", "#4D96FF", "#FFADAD", "#A29BFE",
   ];
 
-  // build wheel background
-  const background = "conic-gradient(" +
-    data
-      .map((seg, i) => {
-        const parts = seg.option.split(" ");
-        const country = parts[parts.length - 1];
-        const grad = flagGradients[country];
-        const start = (i * segAngle).toFixed(2);
-        const end = ((i + 1) * segAngle).toFixed(2);
-        if (grad) {
-          // embed gradient slice
-          return `${grad} ${start}deg ${end}deg`;
-        } else {
-          const color = fallbackColors[i % fallbackColors.length];
-          return `${color} ${start}deg ${end}deg`;
-        }
-      })
-      .join(",") +
-    ")";
+  // build the wheel using conic-gradient
+  const background = `conic-gradient(${data
+    .map((seg, i) => {
+      const parts = seg.option.split(" ");
+      const country = parts[parts.length - 1];
+      const color = countryColors[country] || fallbackColors[i % fallbackColors.length];
+      const start = (i * segAngle).toFixed(2);
+      const end = ((i + 1) * segAngle).toFixed(2);
+      return `${color} ${start}deg ${end}deg`;
+    })
+    .join(", ")})`;
 
   return (
     <div className="relative flex flex-col items-center">
@@ -133,7 +114,7 @@ export default function StableWheel({
         })}
       </div>
 
-      {/* Red pointer at top */}
+      {/* Pointer (top red triangle) */}
       <div
         className="absolute -top-3 left-1/2 -translate-x-1/2"
         style={{
@@ -141,8 +122,7 @@ export default function StableWheel({
           height: 0,
           borderLeft: "10px solid transparent",
           borderRight: "10px solid transparent",
-          borderBottom: "20px solid red",
-          transform: "rotate(180deg)",
+          borderTop: "20px solid red", // fixed orientation
         }}
       ></div>
     </div>
