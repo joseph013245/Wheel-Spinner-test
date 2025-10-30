@@ -32,7 +32,6 @@ interface Player {
   joinedAt: number;
   lastSeen?: number;
 }
-
 interface GameState {
   started: boolean;
   currentSpinnerId: string | null;
@@ -63,18 +62,17 @@ export default function Page() {
   const [usernameInput, setUsernameInput] = useState("");
   const [spinning, setSpinning] = useState(false);
   const [prizeNumber, setPrizeNumber] = useState(0);
-  const [savedPlayer, setSavedPlayer] = useState<{ id: string; username: string } | null>(
-    null
-  );
+  const [lockedCountries, setLockedCountries] = useState(INITIAL_COUNTRIES);
+  const [savedPlayer, setSavedPlayer] = useState<{ id: string; username: string } | null>(null);
 
-  // Load saved player from localStorage
+  // Load saved player
   useEffect(() => {
     const savedId = localStorage.getItem("wheelPlayerId");
     const savedName = localStorage.getItem("wheelUsername");
     if (savedId && savedName) setSavedPlayer({ id: savedId, username: savedName });
   }, []);
 
-  // Watch Firebase data
+  // Watch Firebase
   useEffect(() => onValue(playersRef, (snap) => setPlayers(snap.val() || {})), []);
   useEffect(() =>
     onValue(stateRef, (snap) => {
@@ -87,7 +85,10 @@ export default function Page() {
           results: [],
         };
       setState(data);
-    }), []);
+      if (!spinning && Array.isArray(data.countries)) setLockedCountries(data.countries);
+    }),
+    [spinning]
+  );
 
   // Ensure room exists
   useEffect(() => {
@@ -108,15 +109,13 @@ export default function Page() {
 
   const playerCount = useMemo(() => Object.keys(players || {}).length, [players]);
 
-  // Join (new player)
+  // Join
   const handleJoin = async () => {
     const username = usernameInput.trim().slice(0, 20);
     if (!username) return;
-
     const newRef = push(playersRef);
     const meId = newRef.key!;
     const player: Player = { id: meId, username, joinedAt: Date.now(), lastSeen: Date.now() };
-
     await set(newRef, player);
     setMe(player);
     localStorage.setItem("wheelPlayerId", meId);
@@ -124,11 +123,10 @@ export default function Page() {
     setSavedPlayer({ id: meId, username });
   };
 
-  // Rejoin (existing player)
+  // Rejoin
   const handleRejoin = async () => {
     if (!savedPlayer) return;
     const playerSnap = await get(ref(db, `rooms/${ROOM_ID}/players/${savedPlayer.id}`));
-
     let player: Player;
     if (playerSnap.exists()) {
       player = playerSnap.val() as Player;
@@ -141,22 +139,18 @@ export default function Page() {
       };
       await set(ref(db, `rooms/${ROOM_ID}/players/${savedPlayer.id}`), player);
     }
-
     setMe(player);
   };
 
-  // Heartbeat system 🫀
+  // Heartbeat
   useEffect(() => {
     if (!me) return;
     const interval = setInterval(() => {
-      update(ref(db, `rooms/${ROOM_ID}/players/${me.id}`), {
-        lastSeen: Date.now(),
-      });
+      update(ref(db, `rooms/${ROOM_ID}/players/${me.id}`), { lastSeen: Date.now() });
     }, 5000);
     return () => clearInterval(interval);
   }, [me]);
 
-  // Determine online players
   const now = Date.now();
   const onlinePlayerIds = useMemo(
     () =>
@@ -178,21 +172,17 @@ export default function Page() {
         started: true,
         currentSpinnerId: null,
         remainingPlayerIds,
-        countries: curr.countries.slice(0, GAME_SIZE),
+        countries: curr.countries ? curr.countries.slice(0, GAME_SIZE) : INITIAL_COUNTRIES,
         results: [],
       };
     });
   };
 
-  // Auto pick next spinner
+  // Auto-pick spinner
   useEffect(() => {
-    if (
-      state?.started &&
-      !state?.currentSpinnerId &&
-      (state?.remainingPlayerIds?.length || 0) > 0
-    ) {
+    if (state?.started && !state?.currentSpinnerId && (state?.remainingPlayerIds?.length || 0) > 0) {
       runTransaction(stateRef, (curr: GameState | null) => {
-        if (!curr || !curr.started || curr.currentSpinnerId || !curr.remainingPlayerIds.length)
+        if (!curr || !curr.started || curr.currentSpinnerId || !curr.remainingPlayerIds?.length)
           return curr;
         const chosen = chooseRandom(curr.remainingPlayerIds);
         if (!chosen) return curr;
@@ -203,13 +193,10 @@ export default function Page() {
 
   const amChosen = me && state?.currentSpinnerId === me.id;
 
-  // Wheel data
+  // Wheel data stays frozen while spinning
   const wheelData = useMemo(
-    () =>
-      Array.isArray(state?.countries)
-        ? state.countries.map((c) => ({ option: `${c.flag} ${c.name}` }))
-        : [],
-    [state?.countries]
+    () => lockedCountries.map((c) => ({ option: `${c.flag} ${c.name}` })),
+    [lockedCountries]
   );
 
   const spin = async () => {
@@ -218,6 +205,7 @@ export default function Page() {
     if (!countries.length) return;
     const index = Math.floor(Math.random() * countries.length);
     setPrizeNumber(index);
+    setLockedCountries(countries); // freeze list for smooth spin
     setSpinning(true);
   };
 
@@ -225,17 +213,13 @@ export default function Page() {
     setSpinning(false);
     await runTransaction(stateRef, (curr: GameState | null) => {
       if (!curr || !curr.currentSpinnerId) return curr;
-      if (!curr.remainingPlayerIds.includes(curr.currentSpinnerId)) return curr;
-      if (!curr.countries[prizeNumber]) return curr;
-
+      if (!curr.remainingPlayerIds?.includes(curr.currentSpinnerId)) return curr;
+      if (!curr.countries?.[prizeNumber]) return curr;
       const winningCountry = curr.countries[prizeNumber];
       const playerName = players[curr.currentSpinnerId]?.username || "Unknown";
-      const nextRemaining = curr.remainingPlayerIds.filter(
-        (id) => id !== curr.currentSpinnerId
-      );
+      const nextRemaining = curr.remainingPlayerIds.filter((id) => id !== curr.currentSpinnerId);
       const nextCountries = curr.countries.filter((_, i) => i !== prizeNumber);
-
-      const updated: GameState = {
+      return {
         ...curr,
         countries: nextCountries,
         remainingPlayerIds: nextRemaining,
@@ -245,13 +229,11 @@ export default function Page() {
           { playerName, country: winningCountry.name, flag: winningCountry.flag },
         ],
       };
-
-      return updated;
     });
 
-    // Get new state and pick next spinner (if any)
+    // Wait a tick for Firebase to update before choosing next
     const nextState = (await get(stateRef)).val() as GameState;
-    if (nextState.remainingPlayerIds.length > 0) {
+    if (nextState?.remainingPlayerIds?.length > 0) {
       const nextSpinner = chooseRandom(nextState.remainingPlayerIds);
       await update(stateRef, { currentSpinnerId: nextSpinner });
     }
@@ -270,6 +252,7 @@ export default function Page() {
     setMe(null);
     setPlayers({});
     setState(initial);
+    setLockedCountries(INITIAL_COUNTRIES);
     alert("Room has been reset.");
   };
 
@@ -284,6 +267,7 @@ export default function Page() {
 
   const gameOver = state?.started && (state?.results?.length || 0) >= GAME_SIZE;
 
+  // --- UI ---
   return (
     <main className="container space-y-6">
       <header className="flex items-center justify-between">
@@ -294,8 +278,7 @@ export default function Page() {
       {!me && (
         <section className="card space-y-3">
           <h2 className="text-lg font-semibold">Join the lobby</h2>
-
-          {savedPlayer ? (
+          {savedPlayer && (
             <>
               <div className="p-3 border rounded-md bg-gray-100 dark:bg-neutral-800">
                 <p className="text-sm mb-2">
@@ -305,13 +288,11 @@ export default function Page() {
                   Rejoin as {savedPlayer.username}
                 </button>
               </div>
-
               <div className="text-center text-xs opacity-60 my-2">
                 — or join as a new player —
               </div>
             </>
-          ) : null}
-
+          )}
           <div className="flex gap-2">
             <input
               className="input"
@@ -347,9 +328,7 @@ export default function Page() {
               </div>
             );
           })}
-          {playerCount === 0 && (
-            <div className="text-sm opacity-60">Waiting for players…</div>
-          )}
+          {playerCount === 0 && <div className="text-sm opacity-60">Waiting for players…</div>}
         </div>
         <div className="flex items-center gap-2">
           <button className="btn btn-primary" disabled={!canStart} onClick={handleStart}>
@@ -371,15 +350,11 @@ export default function Page() {
             </div>
           </div>
 
-          {state.countries.length > 0 ? (
+          {state.countries?.length > 0 ? (
             <>
-              <div className="text-sm">
-                Chosen to spin:{" "}
-                <span className="font-semibold">
-                  {currentSpinnerName || "(waiting)"}
-                </span>
+              <div className="text-sm text-center font-medium mb-1">
+                🌀 It’s <b>{currentSpinnerName || "…"}</b>’s turn to spin!
               </div>
-
               <div className="flex flex-col items-center gap-3">
                 <div className="w-full max-w-[360px]">
                   <Wheel
@@ -416,8 +391,8 @@ export default function Page() {
             <table className="table">
               <thead>
                 <tr>
-                  <th className="w-1/2">Player</th>
-                  <th className="w-1/2">Result</th>
+                  <th>Player</th>
+                  <th>Result</th>
                 </tr>
               </thead>
               <tbody>
@@ -434,10 +409,6 @@ export default function Page() {
           </div>
         </section>
       )}
-
-      <footer className="text-center text-xs opacity-60 py-4">
-        Works great on mobile — share this URL with testers.
-      </footer>
     </main>
   );
 }
