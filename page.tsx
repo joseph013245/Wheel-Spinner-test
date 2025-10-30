@@ -220,14 +220,11 @@ export default function Page() {
 
   const amChosen = me && state?.currentSpinnerId === me.id;
 
-  // Wheel logic
-  const wheelData = useMemo(
-    () =>
-      Array.isArray(state?.countries)
-        ? state.countries.map((c) => ({ option: `${c.flag} ${c.name}` }))
-        : [],
-    [state?.countries]
-  );
+  // ✅ Wheel data memoized more safely to avoid jolting
+  const wheelData = useMemo(() => {
+    if (!Array.isArray(state?.countries)) return [];
+    return state.countries.map((c) => ({ option: `${c.flag} ${c.name}` }));
+  }, [JSON.stringify(state?.countries)]);
 
   const spin = async () => {
     if (!amChosen || spinning || state.spinning) return;
@@ -399,7 +396,6 @@ export default function Page() {
           <div className="flex flex-col items-center gap-3">
             <div className="w-full max-w-[360px]">
               <Wheel
-                key={wheelData.map((d) => d.option).join("|")}
                 mustStartSpinning={spinning}
                 prizeNumber={prizeNumber}
                 data={wheelData}
