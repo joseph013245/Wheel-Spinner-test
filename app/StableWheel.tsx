@@ -57,24 +57,27 @@ export default function StableWheel({
   const segAngle = 360 / data.length;
   const radius = 150;
 
-  // 🎨 Flag color palette (simplified but vibrant)
-  const countryColors: Record<string, string> = {
-    Japan: "#ffffff",
-    Brazil: "#009739",
-    Canada: "#ff0000",
+  // 🎨 Realistic flag-style designs
+  const flagStyles: Record<string, string> = {
+    Japan: "radial-gradient(circle at center, #ff0000 20%, #ffffff 21%)",
+    Brazil:
+      "conic-gradient(#009739 0 100%) , linear-gradient(135deg, #ffcc29 45%, transparent 46%), radial-gradient(circle at center, #002776 20%, #ffdf00 21%)",
+    Canada:
+      "linear-gradient(to right, #ff0000 0 33%, #ffffff 33% 66%, #ff0000 66% 100%)",
   };
 
-  // fallback vibrant palette
+  // Fallback vibrant palette
   const fallbackColors = [
     "#FF6B6B", "#FFD93D", "#6BCB77", "#4D96FF", "#FFADAD", "#A29BFE",
   ];
 
-  // build the wheel using conic-gradient
   const background = `conic-gradient(${data
     .map((seg, i) => {
       const parts = seg.option.split(" ");
       const country = parts[parts.length - 1];
-      const color = countryColors[country] || fallbackColors[i % fallbackColors.length];
+      const color = flagStyles[country]
+        ? flagStyles[country]
+        : fallbackColors[i % fallbackColors.length];
       const start = (i * segAngle).toFixed(2);
       const end = ((i + 1) * segAngle).toFixed(2);
       return `${color} ${start}deg ${end}deg`;
@@ -93,19 +96,19 @@ export default function StableWheel({
           transform: `rotate(${rotation}deg)`,
           transition: spinning ? "transform 4s cubic-bezier(0.25,0.1,0.25,1)" : "none",
           background,
+          backgroundBlendMode: "multiply",
         }}
       >
         {data.map((seg, i) => {
           const midAngle = i * segAngle + segAngle / 2;
-          const textRotation = midAngle;
           return (
             <div
               key={i}
-              className="absolute inset-0 flex items-center justify-center text-sm font-bold"
+              className="absolute inset-0 flex items-center justify-center text-sm font-bold text-black"
               style={{
-                transform: `rotate(${textRotation}deg) translate(${radius * 0.65}px) rotate(90deg)`,
-                color: "#000",
+                transform: `rotate(${midAngle}deg) translate(${radius * 0.65}px) rotate(90deg)`,
                 userSelect: "none",
+                textShadow: "0 1px 2px #fff",
               }}
             >
               {seg.option}
@@ -114,7 +117,7 @@ export default function StableWheel({
         })}
       </div>
 
-      {/* Pointer (top red triangle) */}
+      {/* Pointer */}
       <div
         className="absolute -top-3 left-1/2 -translate-x-1/2"
         style={{
@@ -122,7 +125,7 @@ export default function StableWheel({
           height: 0,
           borderLeft: "10px solid transparent",
           borderRight: "10px solid transparent",
-          borderTop: "20px solid red", // fixed orientation
+          borderTop: "20px solid red",
         }}
       ></div>
     </div>
