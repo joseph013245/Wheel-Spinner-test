@@ -13,10 +13,9 @@ import {
 import { db } from "@/lib/firebase";
 import dynamic from "next/dynamic";
 
-const Wheel = dynamic(
-  () => import("react-custom-roulette").then((m) => m.Wheel),
-  { ssr: false }
-);
+const Wheel = dynamic(() => import("react-custom-roulette").then((m) => m.Wheel), {
+  ssr: false,
+});
 
 const GAME_SIZE = 3;
 const INITIAL_COUNTRIES = [
@@ -35,6 +34,7 @@ interface Player {
 
 interface GameState {
   started: boolean;
+  spinning: boolean;
   currentSpinnerId: string | null;
   countries: { name: string; flag: string }[];
   remainingPlayerIds: string[];
@@ -55,115 +55,77 @@ export default function Page() {
   const [players, setPlayers] = useState<Record<string, Player>>({});
   const [state, setState] = useState<GameState>({
     started: false,
+    spinning: false,
     currentSpinnerId: null,
     countries: INITIAL_COUNTRIES,
     remainingPlayerIds: [],
     results: [],
   });
+
   const [usernameInput, setUsernameInput] = useState("");
-  const [spinning, setSpinning] = useState(false);
+  const [spinningLocal, setSpinningLocal] = useState(false);
   const [prizeNumber, setPrizeNumber] = useState(0);
-  const [savedPlayer, setSavedPlayer] = useState<{ id: string; username: string } | null>(
-    null
-  );
 
-  // Load saved player from localStorage
+  // ---- Load existing player ----
   useEffect(() => {
-    const savedId = localStorage.getItem("wheelPlayerId");
-    const savedName = localStorage.getItem("wheelUsername");
-    if (savedId && savedName) setSavedPlayer({ id: savedId, username: savedName });
+    const id = localStorage.getItem("wheelPlayerId");
+    const name = localStorage.getItem("wheelUsername");
+    if (id && name) setMe({ id, username: name, joinedAt: Date.now() });
   }, []);
 
-  // Watch Firebase data
-  useEffect(() => {
-    return onValue(playersRef, (snap) => {
-      const data = snap.val() || {};
-      setPlayers(data);
-    });
-  }, []);
-  useEffect(() => {
-    return onValue(stateRef, (snap) => {
-      const data = snap.val() || {
-        started: false,
-        currentSpinnerId: null,
-        countries: INITIAL_COUNTRIES,
-        remainingPlayerIds: [],
-        results: [],
-      };
-      setState(data);
-    });
-  }, []);
+  // ---- Firebase listeners ----
+  useEffect(() => onValue(playersRef, (s) => setPlayers(s.val() || {})), []);
+  useEffect(() => onValue(stateRef, (s) => setState(s.val() || {
+    started: false,
+    spinning: false,
+    currentSpinnerId: null,
+    countries: INITIAL_COUNTRIES,
+    remainingPlayerIds: [],
+    results: [],
+  })), []);
 
-  // Ensure room exists
+  // ---- Ensure room exists ----
   useEffect(() => {
-    const off = onValue(roomRef, (snap) => {
+    onValue(roomRef, (snap) => {
       if (!snap.val()) {
-        const initial: GameState = {
+        const init: GameState = {
           started: false,
+          spinning: false,
           currentSpinnerId: null,
           countries: INITIAL_COUNTRIES,
           remainingPlayerIds: [],
           results: [],
         };
-        set(roomRef, { state: initial, players: {} });
+        set(roomRef, { state: init, players: {} });
       }
     });
-    return () => off();
   }, []);
 
-  const playerCount = useMemo(() => Object.keys(players || {}).length, [players]);
-
-  // Join (new player)
+  // ---- Join ----
   const handleJoin = async () => {
-    const username = usernameInput.trim().slice(0, 20);
-    if (!username) return;
-
+    const name = usernameInput.trim();
+    if (!name) return;
     const newRef = push(playersRef);
-    const meId = newRef.key!;
-    const player: Player = { id: meId, username, joinedAt: Date.now(), lastSeen: Date.now() };
-
+    const id = newRef.key!;
+    const player: Player = { id, username: name, joinedAt: Date.now(), lastSeen: Date.now() };
     await set(newRef, player);
     setMe(player);
-    localStorage.setItem("wheelPlayerId", meId);
-    localStorage.setItem("wheelUsername", username);
-    setSavedPlayer({ id: meId, username });
+    localStorage.setItem("wheelPlayerId", id);
+    localStorage.setItem("wheelUsername", name);
   };
 
-  // Rejoin (existing player)
-  const handleRejoin = async () => {
-    if (!savedPlayer) return;
-    const playerSnap = await get(ref(db, `rooms/${ROOM_ID}/players/${savedPlayer.id}`));
-
-    let player: Player;
-    if (playerSnap.exists()) {
-      player = playerSnap.val() as Player;
-    } else {
-      player = {
-        id: savedPlayer.id,
-        username: savedPlayer.username,
-        joinedAt: Date.now(),
-        lastSeen: Date.now(),
-      };
-      await set(ref(db, `rooms/${ROOM_ID}/players/${savedPlayer.id}`), player);
-    }
-
-    setMe(player);
-  };
-
-  // Heartbeat system 🫀
+  // ---- Heartbeat ----
   useEffect(() => {
     if (!me) return;
-    const interval = setInterval(() => {
-      update(ref(db, `rooms/${ROOM_ID}/players/${me.id}`), {
-        lastSeen: Date.now(),
-      });
+    const t = setInterval(() => {
+      update(ref(db, `rooms/${ROOM_ID}/players/${me.id}`), { lastSeen: Date.now() });
     }, 5000);
-    return () => clearInterval(interval);
+    return () => clearInterval(t);
   }, [me]);
 
-  // Determine online players
+  // ---- Online players ----
   const now = Date.now();
-  const onlinePlayerIds = useMemo(
+  const onlineIds = useMemo(
     () =>
       Object.values(players)
         .filter((p) => p.lastSeen && now - p.lastSeen < 15000)
@@ -171,79 +133,85 @@ export default function Page() {
     [players, now]
   );
 
-  // Start game
-  const canStart = !state?.started && playerCount >= GAME_SIZE;
+  // ---- Start Game ----
+  const canStart = !state.started && Object.keys(players).length >= GAME_SIZE;
   const handleStart = async () => {
     if (!canStart) return;
     await runTransaction(stateRef, (curr: GameState | null) => {
       if (!curr || curr.started) return curr;
-      const remainingPlayerIds = Object.keys(players || {});
+      const ids = Object.keys(players);
       return {
         ...curr,
         started: true,
+        spinning: false,
         currentSpinnerId: null,
-        remainingPlayerIds,
-        countries: curr.countries.slice(0, GAME_SIZE),
+        remainingPlayerIds: ids,
+        countries: INITIAL_COUNTRIES.slice(),
         results: [],
       };
     });
   };
 
-  // Auto pick spinner
+  // ---- Pick next spinner ----
   useEffect(() => {
-    if (state?.started && !state?.currentSpinnerId && (state?.remainingPlayerIds?.length || 0) > 0) {
+    if (state.started && !state.currentSpinnerId && !state.spinning && state.remainingPlayerIds?.length) {
       runTransaction(stateRef, (curr: GameState | null) => {
-        if (!curr || !curr.started || curr.currentSpinnerId || !curr.remainingPlayerIds.length)
-          return curr;
-        const chosen = chooseRandom(curr.remainingPlayerIds);
-        if (!chosen) return curr;
-        return { ...curr, currentSpinnerId: chosen };
+        if (!curr || !curr.started || curr.currentSpinnerId || curr.spinning) return curr;
+        const next = chooseRandom(curr.remainingPlayerIds);
+        return { ...curr, currentSpinnerId: next };
       });
     }
-  }, [state?.started, state?.currentSpinnerId, state?.remainingPlayerIds]);
+  }, [state.started, state.currentSpinnerId, state.remainingPlayerIds, state.spinning]);
 
-  const amChosen = me && state?.currentSpinnerId === me.id;
+  const amChosen = me?.id === state.currentSpinnerId;
 
-  // Wheel logic
+  // ---- Wheel data ----
   const wheelData = useMemo(
     () =>
-      Array.isArray(state?.countries)
-        ? state.countries.map((c) => ({ option: `${c.flag} ${c.name}` }))
-        : [],
-    [state?.countries]
+      (Array.isArray(state.countries) ? state.countries : []).map((c) => ({
+        option: `${c.flag} ${c.name}`,
+      })),
+    [state.countries]
   );
 
+  // ---- Spin ----
   const spin = async () => {
-    if (!amChosen || spinning) return;
-    const countries = state?.countries || [];
+    if (!amChosen || spinningLocal || state.spinning) return;
+    const countries = state.countries || [];
     if (!countries.length) return;
+
     const index = Math.floor(Math.random() * countries.length);
     setPrizeNumber(index);
-    setSpinning(true);
+    setSpinningLocal(true);
+
+    // Lock globally
+    await update(stateRef, { spinning: true });
   };
 
+  // ---- When spin stops ----
   const onStopSpinning = async () => {
-    setSpinning(false);
+    setSpinningLocal(false);
+
+    const winning = state.countries?.[prizeNumber];
+    if (!winning) {
+      await update(stateRef, { spinning: false });
+      return;
+    }
+
     await runTransaction(stateRef, (curr: GameState | null) => {
-      if (!curr || !curr.currentSpinnerId) return curr;
-      if (!curr.remainingPlayerIds.includes(curr.currentSpinnerId)) return curr;
-      if (!curr.countries[prizeNumber]) return curr;
-
-      const winningCountry = curr.countries[prizeNumber];
-      const playerName = players[curr.currentSpinnerId]?.username || "Unknown";
-      const nextRemaining = curr.remainingPlayerIds.filter(
-        (id) => id !== curr.currentSpinnerId
-      );
-      const nextCountries = curr.countries.filter((_, i) => i !== prizeNumber);
-
+      if (!curr) return curr;
+      const nextCountries = (curr.countries || []).filter((_, i) => i !== prizeNumber);
+      const nextPlayers = (curr.remainingPlayerIds || []).filter((id) => id !== curr.currentSpinnerId);
+      const playerName = players[curr.currentSpinnerId!]?.username || "Unknown";
       return {
         ...curr,
-        countries: nextCountries,
-        remainingPlayerIds: nextRemaining,
+        spinning: false,
         currentSpinnerId: null,
+        countries: nextCountries,
+        remainingPlayerIds: nextPlayers,
         results: [
           ...(curr.results || []),
-          { playerName, country: winningCountry.name, flag: winningCountry.flag },
+          { playerName, country: winning.name, flag: winning.flag },
         ],
       };
     });
@@ -251,31 +219,34 @@ export default function Page() {
 
   const resetRoom = async () => {
     await remove(roomRef);
-    const initial: GameState = {
+    const init: GameState = {
       started: false,
+      spinning: false,
       currentSpinnerId: null,
       countries: INITIAL_COUNTRIES,
       remainingPlayerIds: [],
       results: [],
     };
-    await set(roomRef, { state: initial, players: {} });
+    await set(roomRef, { state: init, players: {} });
     setMe(null);
     setPlayers({});
-    setState(initial);
-    alert("Room has been reset.");
+    setState(init);
   };
 
   const currentSpinnerName = useMemo(() => {
-    const id = state?.currentSpinnerId;
+    const id = state.currentSpinnerId;
     if (!id) return null;
-    const player = players?.[id];
-    if (!player) return "(previous player)";
-    const isOnline = onlinePlayerIds.includes(id);
-    return `${player.username}${isOnline ? "" : " (offline)"}`;
-  }, [state?.currentSpinnerId, players, onlinePlayerIds]);
+    const p = players[id];
+    const online = onlineIds.includes(id);
+    return `${p?.username || "Unknown"}${online ? "" : " (offline)"}`;
+  }, [state.currentSpinnerId, players, onlineIds]);
 
-  const gameOver = state?.started && (state?.results?.length || 0) >= GAME_SIZE;
+  const gameOver =
+    state.started &&
+    (state.results?.length || 0) >= GAME_SIZE &&
+    (state.remainingPlayerIds?.length || 0) === 0;
 
+  // ---- UI ----
   return (
     <main className="container space-y-6">
       <header className="flex items-center justify-between">
@@ -286,31 +257,12 @@ export default function Page() {
       {!me && (
         <section className="card space-y-3">
           <h2 className="text-lg font-semibold">Join the lobby</h2>
-
-          {savedPlayer ? (
-            <>
-              <div className="p-3 border rounded-md bg-gray-100 dark:bg-neutral-800">
-                <p className="text-sm mb-2">
-                  Welcome back, <b>{savedPlayer.username}</b>!
-                </p>
-                <button className="btn btn-primary w-full" onClick={handleRejoin}>
-                  Rejoin as {savedPlayer.username}
-                </button>
-              </div>
-
-              <div className="text-center text-xs opacity-60 my-2">
-                — or join as a new player —
-              </div>
-            </>
-          ) : null}
-
           <div className="flex gap-2">
             <input
               className="input"
-              placeholder="Enter a username (new player)"
+              placeholder="Enter a username"
               value={usernameInput}
               onChange={(e) => setUsernameInput(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && handleJoin()}
             />
             <button className="btn btn-primary" onClick={handleJoin}>
               Join
@@ -321,73 +273,74 @@ export default function Page() {
 
       <section className="card space-y-3">
         <h2 className="text-lg font-semibold">
-          Lobby · Players ({playerCount}/{GAME_SIZE})
+          Lobby · Players ({Object.keys(players).length}/{GAME_SIZE})
         </h2>
         <div className="flex flex-wrap gap-2">
-          {Object.values(players || {}).map((p) => {
-            const online = onlinePlayerIds.includes(p.id);
+          {Object.values(players).map((p) => {
+            const online = onlineIds.includes(p.id);
             return (
               <div
                 key={p.id}
                 className={`px-3 py-1 rounded-full ${
                   online
                     ? "bg-green-200 text-green-900 dark:bg-green-700"
-                    : "bg-gray-100 dark:bg-neutral-800 opacity-60"
+                    : "bg-gray-200 dark:bg-neutral-800 opacity-60"
                 }`}
               >
                 {p.username}
               </div>
             );
           })}
-          {playerCount === 0 && (
-            <div className="text-sm opacity-60">Waiting for players…</div>
-          )}
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex gap-2">
           <button className="btn btn-primary" disabled={!canStart} onClick={handleStart}>
             Start game
           </button>
           <button className="btn btn-secondary" onClick={resetRoom}>
-            Reset Game
+            Reset
           </button>
         </div>
       </section>
 
-      {state?.started && (
+      {state.started && (
         <section className="card space-y-4">
-          <div className="flex items-center justify-between">
+          <div className="flex justify-between items-center">
             <h2 className="text-lg font-semibold">Game</h2>
             <div className="text-sm opacity-70">
-              Remaining: {(state?.countries?.length || 0)} countries ·{" "}
-              {(state?.remainingPlayerIds?.length || 0)} players
+              Remaining: {state.countries?.length || 0} countries ·{" "}
+              {state.remainingPlayerIds?.length || 0} players
             </div>
           </div>
 
           <div className="text-sm">
-            Chosen to spin:{" "}
-            <span className="font-semibold">{currentSpinnerName || "(waiting)"}</span>
+            Current spinner: <b>{currentSpinnerName || "(waiting)"}</b>
           </div>
 
           <div className="flex flex-col items-center gap-3">
             <div className="w-full max-w-[360px]">
               <Wheel
-                key={wheelData.map((d) => d.option).join("|")}
-                mustStartSpinning={spinning}
+                mustStartSpinning={spinningLocal}
                 prizeNumber={prizeNumber}
                 data={wheelData}
                 onStopSpinning={onStopSpinning}
-                outerBorderColor={"#111"}
-                radiusLineColor={"#333"}
+                outerBorderColor="#111"
+                radiusLineColor="#333"
                 fontSize={14}
               />
             </div>
             <button
               className="btn btn-primary"
               onClick={spin}
-              disabled={!amChosen || spinning || gameOver || (state?.countries?.length ?? 0) === 0}
+              disabled={
+                !amChosen ||
+                spinningLocal ||
+                state.spinning ||
+                gameOver ||
+                (state.countries?.length ?? 0) === 0
+              }
             >
               {amChosen
-                ? spinning
+                ? spinningLocal
                   ? "Spinning…"
                   : "Spin the wheel"
                 : "Waiting for spinner"}
@@ -398,17 +351,15 @@ export default function Page() {
             <table className="table">
               <thead>
                 <tr>
-                  <th className="w-1/2">Player</th>
-                  <th className="w-1/2">Result</th>
+                  <th>Player</th>
+                  <th>Result</th>
                 </tr>
               </thead>
               <tbody>
-                {(state?.results ?? []).map((r, idx) => (
-                  <tr key={idx}>
+                {(state.results || []).map((r, i) => (
+                  <tr key={i}>
                     <td>{r.playerName}</td>
-                    <td>
-                      {r.flag} {r.country}
-                    </td>
+                    <td>{r.flag} {r.country}</td>
                   </tr>
                 ))}
               </tbody>
@@ -416,16 +367,12 @@ export default function Page() {
           </div>
 
           {gameOver && (
-            <div className="text-center text-sm opacity-80">
+            <div className="text-center text-sm opacity-70">
               🎉 Game complete! You can reset to play again.
             </div>
           )}
         </section>
       )}
-
-      <footer className="text-center text-xs opacity-60 py-4">
-        Works great on mobile — share this URL with testers.
-      </footer>
     </main>
   );
 }
