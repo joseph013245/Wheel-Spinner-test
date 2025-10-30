@@ -20,6 +20,7 @@ export default function StableWheel({
   const wheelRef = useRef<HTMLDivElement>(null);
   const lastToken = useRef(0);
 
+  // Handle spin trigger
   useEffect(() => {
     if (triggerToken === 0 || triggerToken === lastToken.current) return;
     if (!data || data.length === 0) return;
@@ -27,7 +28,7 @@ export default function StableWheel({
     lastToken.current = triggerToken;
     setSpinning(true);
 
-    const randomTurns = 3 + Math.random() * 2; // 3–5 full spins
+    const randomTurns = 3 + Math.random() * 2; // 3–5 rotations
     const degPerSegment = 360 / data.length;
     const stopDeg = 360 - prizeNumber * degPerSegment;
     const finalRotation = rotation + randomTurns * 360 + stopDeg;
@@ -42,49 +43,70 @@ export default function StableWheel({
     return () => clearTimeout(timeout);
   }, [triggerToken, prizeNumber, data]);
 
-  const segAngle = 360 / (data?.length || 1);
+  if (!data || data.length === 0) {
+    return (
+      <div className="text-sm opacity-60 text-center py-10">
+        Preparing wheel...
+      </div>
+    );
+  }
+
+  const segAngle = 360 / data.length;
+  const radius = 150; // px
 
   return (
     <div className="relative flex flex-col items-center">
+      {/* Wheel body */}
       <div
         ref={wheelRef}
-        className="relative rounded-full border-4 border-black overflow-hidden"
+        className="relative rounded-full border-4 border-black overflow-hidden shadow-lg"
         style={{
-          width: 300,
-          height: 300,
+          width: radius * 2,
+          height: radius * 2,
           transform: `rotate(${rotation}deg)`,
           transition: spinning ? "transform 4s cubic-bezier(0.25,0.1,0.25,1)" : "none",
+          background: "white",
         }}
       >
-        {data.map((seg, i) => (
-          <div
-            key={i}
-            className="absolute inset-0 flex items-center justify-center text-sm font-semibold"
-            style={{
-              transform: `rotate(${i * segAngle}deg)`,
-              background: i % 2 === 0 ? "#ffe58a" : "#ffb347",
-              clipPath: "polygon(50% 50%, 100% 0%, 100% 100%)",
-            }}
-          >
-            <span
+        {data.map((seg, i) => {
+          const startAngle = i * segAngle;
+          const endAngle = startAngle + segAngle;
+          const color = i % 2 === 0 ? "#FFD95A" : "#FFB347"; // alternate gold/orange
+          const textRotation = startAngle + segAngle / 2;
+
+          return (
+            <div
+              key={i}
+              className="absolute inset-0 flex items-center justify-center"
               style={{
-                transform: `rotate(${segAngle / 2}deg) translate(100px) rotate(90deg)`,
+                background: `conic-gradient(${color} ${startAngle}deg ${endAngle}deg, transparent ${endAngle}deg 360deg)`,
+                borderRadius: "50%",
               }}
             >
-              {seg.option}
-            </span>
-          </div>
-        ))}
+              <div
+                className="absolute inset-0 flex items-center justify-center text-sm font-bold"
+                style={{
+                  transform: `rotate(${textRotation}deg) translate(${radius * 0.55}px) rotate(90deg)`,
+                  whiteSpace: "nowrap",
+                  userSelect: "none",
+                }}
+              >
+                {seg.option}
+              </div>
+            </div>
+          );
+        })}
       </div>
 
+      {/* Pointer (flipped downwards) */}
       <div
-        className="absolute top-[-10px] left-1/2 -translate-x-1/2"
+        className="absolute top-[calc(100%+2px)] left-1/2 -translate-x-1/2"
         style={{
           width: 0,
           height: 0,
           borderLeft: "10px solid transparent",
           borderRight: "10px solid transparent",
-          borderBottom: "20px solid red",
+          borderTop: "20px solid red",
         }}
       ></div>
     </div>
