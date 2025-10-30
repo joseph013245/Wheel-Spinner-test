@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   ref,
   onValue,
@@ -18,7 +18,7 @@ const Wheel = dynamic(
   { ssr: false }
 );
 
-const GAME_SIZE = 3; // adjust as needed
+const GAME_SIZE = 3;
 const INITIAL_COUNTRIES = [
   { name: "Japan", flag: "🇯🇵" },
   { name: "Brazil", flag: "🇧🇷" },
@@ -57,11 +57,11 @@ export default function Page() {
   const [spinning, setSpinning] = useState(false);
   const [prizeNumber, setPrizeNumber] = useState(0);
 
-  // Firebase sync
+  // Firebase listeners
   useEffect(() => onValue(playersRef, (snap) => setPlayers(snap.val() || {})), []);
   useEffect(() => onValue(stateRef, (snap) => setState(snap.val())), []);
 
-  // Initialize room
+  // Initialize the room if missing
   useEffect(() => {
     const off = onValue(roomRef, (snap) => {
       if (!snap.val()) {
@@ -80,6 +80,7 @@ export default function Page() {
 
   const playerCount = useMemo(() => Object.keys(players).length, [players]);
 
+  // Join logic
   const handleJoin = async () => {
     const username = usernameInput.trim().slice(0, 20);
     if (!username) return;
@@ -91,16 +92,19 @@ export default function Page() {
     setMe(player);
   };
 
-  const canStart = !state?.started && playerCount >= GAME_SIZE;
-
+  // Start game fix — fetch latest players before running
   const handleStart = async () => {
+    const playersSnap = await get(playersRef);
+    const latestPlayers = playersSnap.val() || {};
+    const canStart = !state?.started && Object.keys(latestPlayers).length >= GAME_SIZE;
     if (!canStart) return;
+
     await runTransaction(stateRef, (curr: GameState | null) => {
       if (!curr || curr.started) return curr;
       const safeCountries = Array.isArray(curr.countries)
         ? curr.countries
         : INITIAL_COUNTRIES;
-      const remainingPlayerIds = Object.keys(players);
+      const remainingPlayerIds = Object.keys(latestPlayers);
       return {
         ...curr,
         started: true,
@@ -112,6 +116,20 @@ export default function Page() {
         prizeNumber: null,
       };
     });
+  };
+
+  const handleReset = async () => {
+    await set(roomRef, {
+      state: {
+        started: false,
+        currentSpinnerId: null,
+        countries: INITIAL_COUNTRIES,
+        remainingPlayerIds: [],
+        results: [],
+      },
+      players: {},
+    });
+    setMe(null);
   };
 
   const amChosen = me && state?.currentSpinnerId === me.id;
@@ -135,7 +153,7 @@ export default function Page() {
     });
   };
 
-  // Sync spin states between users
+  // Sync spin states between players
   useEffect(() => {
     if (state?.spinning && typeof state.prizeNumber === "number") {
       setPrizeNumber(state.prizeNumber);
@@ -257,16 +275,13 @@ export default function Page() {
           )}
         </div>
         <div className="flex items-center gap-2">
-          <button className="btn btn-primary" disabled={!canStart} onClick={handleStart}>
+          <button className="btn btn-primary" onClick={handleStart}>
             Start game
           </button>
-          <button
-            className="btn btn-secondary"
-            onClick={() => set(stateRef, null)}
-          >
+          <button className="btn btn-secondary" onClick={handleReset}>
             Reset Game
           </button>
-          {!canStart && (
+          {!state?.started && (
             <span className="text-xs opacity-70">
               Need {Math.max(0, GAME_SIZE - playerCount)} more to start
             </span>
@@ -293,12 +308,10 @@ export default function Page() {
                 >
                   Pick random player
                 </button>
-                {currentSpinnerName && (
-                  <div className="text-sm">
-                    Chosen to spin:{" "}
-                    <span className="font-semibold">{currentSpinnerName}</span>
-                  </div>
-                )}
+                <div className="text-sm">
+                  Chosen to spin:{" "}
+                  <span className="font-semibold">{currentSpinnerName}</span>
+                </div>
               </div>
               <div className="flex flex-col items-center gap-3">
                 <div className="w-full max-w-[360px]">
@@ -349,7 +362,7 @@ export default function Page() {
           </div>
           {gameOver && (
             <div className="text-center text-sm opacity-80 py-3">
-              🎉 Game complete! Refresh to start a new round.
+              🎉 Game complete! Refresh or reset to start again.
             </div>
           )}
         </section>
