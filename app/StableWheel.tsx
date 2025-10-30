@@ -27,7 +27,7 @@ export default function StableWheel({
     lastToken.current = triggerToken;
     setSpinning(true);
 
-    const randomTurns = 3 + Math.random() * 2; // 3–5 full rotations
+    const randomTurns = 3 + Math.random() * 2;
     const degPerSegment = 360 / data.length;
     const stopDeg = prizeNumber * degPerSegment + degPerSegment / 2;
     const finalRotation = rotation + randomTurns * 360 + stopDeg;
@@ -53,6 +53,31 @@ export default function StableWheel({
   const segAngle = 360 / data.length;
   const radius = 150;
 
+  // 🇯🇵🇧🇷🇨🇦 Flag colors
+  const flagColors: Record<string, string> = {
+    Japan: "#FFFFFF", // white
+    Brazil: "#009739", // green
+    Canada: "#FF0000", // red
+  };
+
+  // Fallback colors if flag not found
+  const fallbackColors = ["#FFD95A", "#FFB347", "#A0C4FF", "#FFADAD"];
+
+  const background = "conic-gradient(" +
+    data
+      .map((seg, i) => {
+        // Extract the country name (after emoji flag)
+        const parts = seg.option.split(" ");
+        const country = parts[parts.length - 1];
+        const color =
+          flagColors[country] || fallbackColors[i % fallbackColors.length];
+        const start = (i * segAngle).toFixed(2);
+        const end = ((i + 1) * segAngle).toFixed(2);
+        return `${color} ${start}deg ${end}deg`;
+      })
+      .join(",") +
+    ")";
+
   return (
     <div className="relative flex flex-col items-center">
       {/* Wheel body */}
@@ -64,16 +89,7 @@ export default function StableWheel({
           height: radius * 2,
           transform: `rotate(${rotation}deg)`,
           transition: spinning ? "transform 4s cubic-bezier(0.25,0.1,0.25,1)" : "none",
-          background: "conic-gradient(" +
-            data
-              .map((_, i) => {
-                const color = i % 2 === 0 ? "#FFD95A" : "#FFB347";
-                const start = (i * segAngle).toFixed(2);
-                const end = ((i + 1) * segAngle).toFixed(2);
-                return `${color} ${start}deg ${end}deg`;
-              })
-              .join(",") +
-            ")",
+          background,
         }}
       >
         {/* Segment labels */}
@@ -88,6 +104,7 @@ export default function StableWheel({
               style={{
                 transform: `rotate(${textRotation}deg) translate(${radius * 0.65}px) rotate(90deg)`,
                 userSelect: "none",
+                color: "black",
               }}
             >
               {seg.option}
@@ -96,7 +113,7 @@ export default function StableWheel({
         })}
       </div>
 
-      {/* Pointer at TOP (rotated downwards 180°) */}
+      {/* Pointer (at top, points downward) */}
       <div
         className="absolute -top-3 left-1/2 -translate-x-1/2"
         style={{
@@ -105,7 +122,7 @@ export default function StableWheel({
           borderLeft: "10px solid transparent",
           borderRight: "10px solid transparent",
           borderBottom: "20px solid red",
-          transform: "rotate(180deg)", // flip downward
+          transform: "rotate(180deg)",
         }}
       ></div>
     </div>
