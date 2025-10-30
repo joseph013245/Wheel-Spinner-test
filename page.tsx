@@ -6,7 +6,7 @@ import dynamic from "next/dynamic";
 
 const Wheel = dynamic(() => import("react-custom-roulette").then(m => m.Wheel), { ssr: false });
 
-const GAME_SIZE = 3; // change to 8 later
+const GAME_SIZE = 3;
 const INITIAL_COUNTRIES = [
   { name: "Japan", flag: "🇯🇵" },
   { name: "Brazil", flag: "🇧🇷" },
@@ -32,7 +32,8 @@ const roomRef = ref(db, `rooms/${ROOM_ID}`);
 const playersRef = ref(db, `rooms/${ROOM_ID}/players`);
 const stateRef = ref(db, `rooms/${ROOM_ID}/state`);
 
-function chooseRandom<T>(arr: T[]) {
+function chooseRandom<T>(arr: T[]): T | null {
+  if (!arr || arr.length === 0) return null;
   return arr[Math.floor(Math.random() * arr.length)];
 }
 
@@ -49,16 +50,18 @@ export default function Page() {
   const [usernameInput, setUsernameInput] = useState("");
   const [spinning, setSpinning] = useState(false);
   const [prizeNumber, setPrizeNumber] = useState(0);
-  const wheelRef = useRef<any>(null);
 
-  // ✅ Live Firebase sync
+  // Watch Firebase
   useEffect(() => onValue(playersRef, (snap) => setPlayers(snap.val() || {})), []);
-  useEffect(() => onValue(stateRef, (snap) => {
-    const data = snap.val();
-    if (data) setState(data);
-  }), []);
+  useEffect(() => onValue(stateRef, (snap) => setState(snap.val() || {
+    started: false,
+    currentSpinnerId: null,
+    countries: INITIAL_COUNTRIES,
+    remainingPlayerIds: [],
+    results: []
+  })), []);
 
-  // ✅ Ensure the room exists
+  // Ensure room exists
   useEffect(() => {
     const off = onValue(roomRef, (snap) => {
       if (!snap.val()) {
@@ -77,7 +80,7 @@ export default function Page() {
 
   const playerCount = useMemo(() => Object.keys(players || {}).length, [players]);
 
-  // ✅ Join the game
+  // Join
   const handleJoin = async () => {
     const username = usernameInput.trim().slice(0, 20);
     if (!username) return;
@@ -89,7 +92,7 @@ export default function Page() {
     setMe(player);
   };
 
-  // ✅ Start the game
+  // Start game
   const canStart = !state?.started && playerCount >= GAME_SIZE;
   const handleStart = async () => {
     if (!canStart) return;
@@ -107,20 +110,21 @@ export default function Page() {
     });
   };
 
-  // ✅ Pick a spinner
+  // Auto pick spinner when game starts or spinner cleared
+  useEffect(() => {
+    if (state?.started && !state?.currentSpinnerId && (state?.remainingPlayerIds?.length || 0) > 0) {
+      runTransaction(stateRef, (curr: GameState | null) => {
+        if (!curr || !curr.started || curr.currentSpinnerId || !curr.remainingPlayerIds.length) return curr;
+        const chosen = chooseRandom(curr.remainingPlayerIds);
+        if (!chosen) return curr;
+        return { ...curr, currentSpinnerId: chosen };
+      });
+    }
+  }, [state?.started, state?.currentSpinnerId, state?.remainingPlayerIds]);
+
   const amChosen = me && state?.currentSpinnerId === me.id;
-  const canPickSpinner = state?.started && !state?.currentSpinnerId && (state?.remainingPlayerIds?.length || 0) > 0;
 
-  const pickSpinner = async () => {
-    if (!canPickSpinner) return;
-    await runTransaction(stateRef, (curr: GameState | null) => {
-      if (!curr || !curr.started || curr.currentSpinnerId || !curr.remainingPlayerIds.length) return curr;
-      const chosen = chooseRandom(curr.remainingPlayerIds);
-      return { ...curr, currentSpinnerId: chosen };
-    });
-  };
-
-  // ✅ Spin logic
+  // Wheel setup
   const wheelData = useMemo(
     () => (Array.isArray(state?.countries) ? state.countries.map(c => ({ option: `${c.flag} ${c.name}` })) : []),
     [state?.countries]
@@ -160,7 +164,7 @@ export default function Page() {
     });
   };
 
-  // ✅ Reset room (for testing)
+  // Reset
   const resetRoom = async () => {
     await remove(roomRef);
     const initial: GameState = {
@@ -177,28 +181,14 @@ export default function Page() {
     alert("Room has been reset.");
   };
 
-  // Derived values
-  const currentSpinnerName = useMemo(
-    () =>
-      state?.currentSpinnerId
-        ? (players[state.currentSpinnerId]?.username || "(player)")
-        : null,
-    [state?.currentSpinnerId, players]
-  );
+  const currentSpinnerName = useMemo(() => {
+    const id = state?.currentSpinnerId;
+    if (!id) return null;
+    const player = players?.[id];
+    return player ? player.username : "(waiting)";
+  }, [state?.currentSpinnerId, players]);
 
   const gameOver = state?.started && (state?.results?.length || 0) >= GAME_SIZE;
-
-  // ✅ Basic safety fallback
-  if (!state || !Array.isArray(state.countries)) {
-    return (
-      <main className="container text-center py-20">
-        <p className="mb-4">⚠️ Something went wrong with the game data.</p>
-        <button className="btn btn-primary" onClick={resetRoom}>
-          Reset Room
-        </button>
-      </main>
-    );
-  }
 
   return (
     <main className="container space-y-6">
@@ -237,7 +227,6 @@ export default function Page() {
         <div className="flex items-center gap-2">
           <button className="btn btn-primary" disabled={!canStart} onClick={handleStart}>Start game</button>
           <button className="btn btn-secondary" onClick={resetRoom}>Reset Game</button>
-          {!canStart && <span className="text-xs opacity-70">Need {Math.max(0, GAME_SIZE - playerCount)} more to start</span>}
         </div>
       </section>
 
@@ -251,12 +240,9 @@ export default function Page() {
           </div>
 
           <div className="flex items-center gap-2">
-            <button className="btn btn-secondary" onClick={pickSpinner} disabled={!canPickSpinner}>Pick random player</button>
-            {currentSpinnerName && (
-              <div className="text-sm">
-                Chosen to spin: <span className="font-semibold">{currentSpinnerName}</span>
-              </div>
-            )}
+            <div className="text-sm">
+              Chosen to spin: <span className="font-semibold">{currentSpinnerName || "(selecting...)"}</span>
+            </div>
           </div>
 
           <div className="flex flex-col items-center gap-3">
@@ -298,7 +284,7 @@ export default function Page() {
           </div>
 
           {gameOver && (
-            <div className="text-center text-sm opacity-80">Game complete! You can reset to play again.</div>
+            <div className="text-center text-sm opacity-80">🎉 Game complete! You can reset to play again.</div>
           )}
         </section>
       )}
