@@ -39,6 +39,9 @@ interface GameState {
   countries: { name: string; flag: string }[];
   remainingPlayerIds: string[];
   results: { playerName: string; country: string; flag: string }[];
+  spinning?: boolean;
+  prizeNumber?: number;
+  lastSpinAt?: number;
 }
 
 const roomRef = ref(db, `rooms/${ROOM_ID}`);
@@ -67,30 +70,18 @@ export default function Page() {
     null
   );
 
-  // Load saved player from localStorage
+  const wheelRef = useRef<any>(null);
+
+  // Load saved player
   useEffect(() => {
     const savedId = localStorage.getItem("wheelPlayerId");
     const savedName = localStorage.getItem("wheelUsername");
     if (savedId && savedName) setSavedPlayer({ id: savedId, username: savedName });
   }, []);
 
-  // Watch Firebase state
+  // Firebase listeners
   useEffect(() => onValue(playersRef, (snap) => setPlayers(snap.val() || {})), []);
-  useEffect(
-    () =>
-      onValue(stateRef, (snap) =>
-        setState(
-          snap.val() || {
-            started: false,
-            currentSpinnerId: null,
-            countries: INITIAL_COUNTRIES,
-            remainingPlayerIds: [],
-            results: [],
-          }
-        )
-      ),
-    []
-  );
+  useEffect(() => onValue(stateRef, (snap) => setState(snap.val() || {})), []);
 
   // Ensure room exists
   useEffect(() => {
@@ -109,57 +100,16 @@ export default function Page() {
     return () => off();
   }, []);
 
-  const playerCount = useMemo(() => Object.keys(players || {}).length, [players]);
-
-  // Join (new player)
-  const handleJoin = async () => {
-    const username = usernameInput.trim().slice(0, 20);
-    if (!username) return;
-
-    const newRef = push(playersRef);
-    const meId = newRef.key!;
-    const player: Player = { id: meId, username, joinedAt: Date.now(), lastSeen: Date.now() };
-
-    await set(newRef, player);
-    setMe(player);
-    localStorage.setItem("wheelPlayerId", meId);
-    localStorage.setItem("wheelUsername", username);
-    setSavedPlayer({ id: meId, username });
-  };
-
-  // Rejoin (existing player)
-  const handleRejoin = async () => {
-    if (!savedPlayer) return;
-    const playerSnap = await get(ref(db, `rooms/${ROOM_ID}/players/${savedPlayer.id}`));
-
-    let player: Player;
-    if (playerSnap.exists()) {
-      player = playerSnap.val() as Player;
-    } else {
-      player = {
-        id: savedPlayer.id,
-        username: savedPlayer.username,
-        joinedAt: Date.now(),
-        lastSeen: Date.now(),
-      };
-      await set(ref(db, `rooms/${ROOM_ID}/players/${savedPlayer.id}`), player);
-    }
-
-    setMe(player);
-  };
-
-  // Heartbeat system 🫀
+  // Heartbeat system
   useEffect(() => {
     if (!me) return;
     const interval = setInterval(() => {
-      update(ref(db, `rooms/${ROOM_ID}/players/${me.id}`), {
-        lastSeen: Date.now(),
-      });
+      update(ref(db, `rooms/${ROOM_ID}/players/${me.id}`), { lastSeen: Date.now() });
     }, 5000);
     return () => clearInterval(interval);
   }, [me]);
 
-  // Determine online players
+  // Compute online status
   const now = Date.now();
   const onlinePlayerIds = useMemo(
     () =>
@@ -169,7 +119,35 @@ export default function Page() {
     [players, now]
   );
 
+  // Join / rejoin
+  const handleJoin = async () => {
+    const username = usernameInput.trim().slice(0, 20);
+    if (!username) return;
+    const newRef = push(playersRef);
+    const meId = newRef.key!;
+    const player: Player = { id: meId, username, joinedAt: Date.now(), lastSeen: Date.now() };
+    await set(newRef, player);
+    setMe(player);
+    localStorage.setItem("wheelPlayerId", meId);
+    localStorage.setItem("wheelUsername", username);
+    setSavedPlayer({ id: meId, username });
+  };
+
+  const handleRejoin = async () => {
+    if (!savedPlayer) return;
+    const playerSnap = await get(ref(db, `rooms/${ROOM_ID}/players/${savedPlayer.id}`));
+    let player: Player;
+    if (playerSnap.exists()) {
+      player = playerSnap.val() as Player;
+    } else {
+      player = { id: savedPlayer.id, username: savedPlayer.username, joinedAt: Date.now(), lastSeen: Date.now() };
+      await set(ref(db, `rooms/${ROOM_ID}/players/${savedPlayer.id}`), player);
+    }
+    setMe(player);
+  };
+
   // Start game
+  const playerCount = Object.keys(players || {}).length;
   const canStart = !state?.started && playerCount >= GAME_SIZE;
   const handleStart = async () => {
     if (!canStart) return;
@@ -187,29 +165,29 @@ export default function Page() {
     });
   };
 
-  // Auto pick spinner
+  // Auto choose spinner
   useEffect(() => {
     if (state?.started && !state?.currentSpinnerId && (state?.remainingPlayerIds?.length || 0) > 0) {
       runTransaction(stateRef, (curr: GameState | null) => {
-        if (!curr || !curr.started || curr.currentSpinnerId || !curr.remainingPlayerIds.length)
-          return curr;
+        if (!curr || curr.currentSpinnerId) return curr;
         const chosen = chooseRandom(curr.remainingPlayerIds);
-        if (!chosen) return curr;
         return { ...curr, currentSpinnerId: chosen };
       });
     }
   }, [state?.started, state?.currentSpinnerId, state?.remainingPlayerIds]);
 
-  // Re-enable spin if player rejoined and it's their turn
-  useEffect(() => {
-    if (me && state?.currentSpinnerId === me.id && !spinning) {
-      console.log("Rejoined during your turn — spin enabled");
-    }
-  }, [me, state?.currentSpinnerId]);
-
   const amChosen = me && state?.currentSpinnerId === me.id;
 
-  // Wheel logic
+  // Spin sync: local reaction to DB updates
+  useEffect(() => {
+    if (state?.spinning && typeof state.prizeNumber === "number") {
+      setPrizeNumber(state.prizeNumber);
+      setSpinning(true);
+    } else {
+      setSpinning(false);
+    }
+  }, [state?.spinning, state?.prizeNumber]);
+
   const wheelData = useMemo(
     () =>
       Array.isArray(state?.countries)
@@ -218,34 +196,38 @@ export default function Page() {
     [state?.countries]
   );
 
+  // Spin function
   const spin = async () => {
     if (!amChosen || spinning) return;
     const countries = state?.countries || [];
     if (!countries.length) return;
     const index = Math.floor(Math.random() * countries.length);
-    setPrizeNumber(index);
-    setSpinning(true);
+
+    await update(stateRef, {
+      spinning: true,
+      prizeNumber: index,
+      lastSpinAt: Date.now(),
+    });
   };
 
   const onStopSpinning = async () => {
-    setSpinning(false);
     await runTransaction(stateRef, (curr: GameState | null) => {
       if (!curr || !curr.currentSpinnerId) return curr;
-      if (!curr.remainingPlayerIds.includes(curr.currentSpinnerId)) return curr;
-      if (!curr.countries[prizeNumber]) return curr;
+      if (!curr.countries[curr.prizeNumber ?? 0]) return curr;
 
-      const winningCountry = curr.countries[prizeNumber];
+      const winningCountry = curr.countries[curr.prizeNumber ?? 0];
       const playerName = players[curr.currentSpinnerId]?.username || "Unknown";
-      const nextRemaining = curr.remainingPlayerIds.filter(
-        (id) => id !== curr.currentSpinnerId
-      );
-      const nextCountries = curr.countries.filter((_, i) => i !== prizeNumber);
+
+      const nextRemaining = curr.remainingPlayerIds.filter((id) => id !== curr.currentSpinnerId);
+      const nextCountries = curr.countries.filter((_, i) => i !== (curr.prizeNumber ?? 0));
 
       return {
         ...curr,
+        spinning: false,
+        prizeNumber: null,
+        currentSpinnerId: null,
         countries: nextCountries,
         remainingPlayerIds: nextRemaining,
-        currentSpinnerId: null,
         results: [
           ...(curr.results || []),
           { playerName, country: winningCountry.name, flag: winningCountry.flag },
@@ -267,15 +249,16 @@ export default function Page() {
     setMe(null);
     setPlayers({});
     setState(initial);
-    alert("Room has been reset.");
   };
 
   const currentSpinnerName = useMemo(() => {
     const id = state?.currentSpinnerId;
     if (!id) return null;
     const player = players?.[id];
-    return player ? player.username : "(waiting)";
-  }, [state?.currentSpinnerId, players]);
+    if (!player) return "(previous player)";
+    const isOnline = onlinePlayerIds.includes(id);
+    return `${player.username}${isOnline ? "" : " (offline)"}`;
+  }, [state?.currentSpinnerId, players, onlinePlayerIds]);
 
   const gameOver = state?.started && (state?.results?.length || 0) >= GAME_SIZE;
 
@@ -342,9 +325,6 @@ export default function Page() {
               </div>
             );
           })}
-          {playerCount === 0 && (
-            <div className="text-sm opacity-60">Waiting for players…</div>
-          )}
         </div>
         <div className="flex items-center gap-2">
           <button className="btn btn-primary" disabled={!canStart} onClick={handleStart}>
@@ -368,7 +348,7 @@ export default function Page() {
 
           <div className="text-sm">
             Chosen to spin:{" "}
-            <span className="font-semibold">{currentSpinnerName || "(selecting...)"}</span>
+            <span className="font-semibold">{currentSpinnerName || "(waiting)"}</span>
           </div>
 
           <div className="flex flex-col items-center gap-3">
