@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ref,
   onValue,
@@ -63,28 +63,47 @@ export default function Page() {
   });
 
   const [usernameInput, setUsernameInput] = useState("");
-  const [spinningLocal, setSpinningLocal] = useState(false);
+  const [spinning, setSpinning] = useState(false);
   const [prizeNumber, setPrizeNumber] = useState(0);
 
-  // ---- Load existing player ----
+  // ✅ local wheel data (decoupled from Firebase)
+  const [localCountries, setLocalCountries] = useState(INITIAL_COUNTRIES);
+  const [localResults, setLocalResults] = useState<
+    { playerName: string; country: string; flag: string }[]
+  >([]);
+
+  // --- Load saved player ---
   useEffect(() => {
     const id = localStorage.getItem("wheelPlayerId");
     const name = localStorage.getItem("wheelUsername");
     if (id && name) setMe({ id, username: name, joinedAt: Date.now() });
   }, []);
 
-  // ---- Firebase listeners ----
+  // --- Firebase listeners ---
   useEffect(() => onValue(playersRef, (s) => setPlayers(s.val() || {})), []);
-  useEffect(() => onValue(stateRef, (s) => setState(s.val() || {
-    started: false,
-    spinning: false,
-    currentSpinnerId: null,
-    countries: INITIAL_COUNTRIES,
-    remainingPlayerIds: [],
-    results: [],
-  })), []);
+  useEffect(() => {
+    return onValue(stateRef, (snap) => {
+      const data = snap.val() || {
+        started: false,
+        spinning: false,
+        currentSpinnerId: null,
+        countries: INITIAL_COUNTRIES,
+        remainingPlayerIds: [],
+        results: [],
+      };
+      setState(data);
 
-  // ---- Ensure room exists ----
+      // ✅ Update localCountries only when not spinning
+      if (!spinning && Array.isArray(data.countries)) {
+        setLocalCountries(data.countries);
+      }
+      if (!spinning && Array.isArray(data.results)) {
+        setLocalResults(data.results);
+      }
+    });
+  }, [spinning]);
+
+  // --- Ensure room exists ---
   useEffect(() => {
     onValue(roomRef, (snap) => {
       if (!snap.val()) {
@@ -101,7 +120,7 @@ export default function Page() {
     });
   }, []);
 
-  // ---- Join ----
+  // --- Join ---
   const handleJoin = async () => {
     const name = usernameInput.trim();
     if (!name) return;
@@ -114,7 +133,7 @@ export default function Page() {
     localStorage.setItem("wheelUsername", name);
   };
 
-  // ---- Heartbeat ----
+  // --- Heartbeat ---
   useEffect(() => {
     if (!me) return;
     const t = setInterval(() => {
@@ -123,7 +142,6 @@ export default function Page() {
     return () => clearInterval(t);
   }, [me]);
 
-  // ---- Online players ----
   const now = Date.now();
   const onlineIds = useMemo(
     () =>
@@ -133,26 +151,23 @@ export default function Page() {
     [players, now]
   );
 
-  // ---- Start Game ----
+  // --- Start Game ---
   const canStart = !state.started && Object.keys(players).length >= GAME_SIZE;
   const handleStart = async () => {
     if (!canStart) return;
-    await runTransaction(stateRef, (curr: GameState | null) => {
-      if (!curr || curr.started) return curr;
-      const ids = Object.keys(players);
-      return {
-        ...curr,
-        started: true,
-        spinning: false,
-        currentSpinnerId: null,
-        remainingPlayerIds: ids,
-        countries: INITIAL_COUNTRIES.slice(),
-        results: [],
-      };
-    });
+    const ids = Object.keys(players);
+    const initState: GameState = {
+      started: true,
+      spinning: false,
+      currentSpinnerId: null,
+      countries: INITIAL_COUNTRIES.slice(0, GAME_SIZE),
+      remainingPlayerIds: ids,
+      results: [],
+    };
+    await set(stateRef, initState);
   };
 
-  // ---- Pick next spinner ----
+  // --- Auto pick spinner ---
   useEffect(() => {
     if (state.started && !state.currentSpinnerId && !state.spinning && state.remainingPlayerIds?.length) {
       runTransaction(stateRef, (curr: GameState | null) => {
@@ -161,58 +176,61 @@ export default function Page() {
         return { ...curr, currentSpinnerId: next };
       });
     }
-  }, [state.started, state.currentSpinnerId, state.remainingPlayerIds, state.spinning]);
+  }, [state]);
 
   const amChosen = me?.id === state.currentSpinnerId;
 
-  // ---- Wheel data ----
+  // --- Wheel data ---
   const wheelData = useMemo(
-    () =>
-      (Array.isArray(state.countries) ? state.countries : []).map((c) => ({
-        option: `${c.flag} ${c.name}`,
-      })),
-    [state.countries]
+    () => localCountries.map((c) => ({ option: `${c.flag} ${c.name}` })),
+    [localCountries]
   );
 
-  // ---- Spin ----
+  // --- Spin ---
   const spin = async () => {
-    if (!amChosen || spinningLocal || state.spinning) return;
-    const countries = state.countries || [];
+    if (!amChosen || spinning || state.spinning) return;
+    const countries = localCountries;
     if (!countries.length) return;
 
     const index = Math.floor(Math.random() * countries.length);
     setPrizeNumber(index);
-    setSpinningLocal(true);
+    setSpinning(true);
 
-    // Lock globally
     await update(stateRef, { spinning: true });
   };
 
-  // ---- When spin stops ----
+  // --- Stop spinning ---
   const onStopSpinning = async () => {
-    setSpinningLocal(false);
-
-    const winning = state.countries?.[prizeNumber];
+    const winning = localCountries[prizeNumber];
     if (!winning) {
+      setSpinning(false);
       await update(stateRef, { spinning: false });
       return;
     }
 
+    const playerName = players[state.currentSpinnerId!]?.username || "Unknown";
+    const newCountries = localCountries.filter((_, i) => i !== prizeNumber);
+    const newResults = [
+      ...localResults,
+      { playerName, country: winning.name, flag: winning.flag },
+    ];
+
+    setLocalCountries(newCountries);
+    setLocalResults(newResults);
+    setSpinning(false);
+
     await runTransaction(stateRef, (curr: GameState | null) => {
       if (!curr) return curr;
-      const nextCountries = (curr.countries || []).filter((_, i) => i !== prizeNumber);
-      const nextPlayers = (curr.remainingPlayerIds || []).filter((id) => id !== curr.currentSpinnerId);
-      const playerName = players[curr.currentSpinnerId!]?.username || "Unknown";
+      const nextRemaining = curr.remainingPlayerIds.filter(
+        (id) => id !== curr.currentSpinnerId
+      );
       return {
         ...curr,
-        spinning: false,
+        countries: newCountries,
+        remainingPlayerIds: nextRemaining,
         currentSpinnerId: null,
-        countries: nextCountries,
-        remainingPlayerIds: nextPlayers,
-        results: [
-          ...(curr.results || []),
-          { playerName, country: winning.name, flag: winning.flag },
-        ],
+        spinning: false,
+        results: newResults,
       };
     });
   };
@@ -228,9 +246,9 @@ export default function Page() {
       results: [],
     };
     await set(roomRef, { state: init, players: {} });
-    setMe(null);
-    setPlayers({});
     setState(init);
+    setLocalCountries(INITIAL_COUNTRIES);
+    setLocalResults([]);
   };
 
   const currentSpinnerName = useMemo(() => {
@@ -246,10 +264,10 @@ export default function Page() {
     (state.results?.length || 0) >= GAME_SIZE &&
     (state.remainingPlayerIds?.length || 0) === 0;
 
-  // ---- UI ----
+  // --- UI ---
   return (
     <main className="container space-y-6">
-      <header className="flex items-center justify-between">
+      <header className="flex justify-between items-center">
         <h1 className="text-2xl font-bold">🎡 Realtime Wheel Spinner (3)</h1>
         <span className="text-xs opacity-70">Room: test-room</span>
       </header>
@@ -307,7 +325,7 @@ export default function Page() {
           <div className="flex justify-between items-center">
             <h2 className="text-lg font-semibold">Game</h2>
             <div className="text-sm opacity-70">
-              Remaining: {state.countries?.length || 0} countries ·{" "}
+              Remaining: {localCountries.length} countries ·{" "}
               {state.remainingPlayerIds?.length || 0} players
             </div>
           </div>
@@ -319,7 +337,7 @@ export default function Page() {
           <div className="flex flex-col items-center gap-3">
             <div className="w-full max-w-[360px]">
               <Wheel
-                mustStartSpinning={spinningLocal}
+                mustStartSpinning={spinning}
                 prizeNumber={prizeNumber}
                 data={wheelData}
                 onStopSpinning={onStopSpinning}
@@ -333,14 +351,14 @@ export default function Page() {
               onClick={spin}
               disabled={
                 !amChosen ||
-                spinningLocal ||
+                spinning ||
                 state.spinning ||
                 gameOver ||
-                (state.countries?.length ?? 0) === 0
+                localCountries.length === 0
               }
             >
               {amChosen
-                ? spinningLocal
+                ? spinning
                   ? "Spinning…"
                   : "Spin the wheel"
                 : "Waiting for spinner"}
@@ -356,10 +374,12 @@ export default function Page() {
                 </tr>
               </thead>
               <tbody>
-                {(state.results || []).map((r, i) => (
+                {localResults.map((r, i) => (
                   <tr key={i}>
                     <td>{r.playerName}</td>
-                    <td>{r.flag} {r.country}</td>
+                    <td>
+                      {r.flag} {r.country}
+                    </td>
                   </tr>
                 ))}
               </tbody>
