@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState, memo } from "react";
 import {
   ref,
   onValue,
@@ -13,6 +13,7 @@ import {
 import { db } from "@/lib/firebase";
 import dynamic from "next/dynamic";
 
+// Dynamically import roulette
 const Wheel = dynamic(
   () => import("react-custom-roulette").then((m) => m.Wheel),
   { ssr: false }
@@ -36,7 +37,7 @@ interface Player {
 interface GameState {
   started: boolean;
   currentSpinnerId: string | null;
-  spinning?: boolean; // 🔒 new lock flag
+  spinning?: boolean;
   countries: { name: string; flag: string }[];
   remainingPlayerIds: string[];
   results: { playerName: string; country: string; flag: string }[];
@@ -50,6 +51,31 @@ function chooseRandom<T>(arr: T[]): T | null {
   if (!arr || arr.length === 0) return null;
   return arr[Math.floor(Math.random() * arr.length)];
 }
+
+// 🔒 Stable wheel component that doesn’t re-render unless needed
+const StableWheel = memo(function StableWheel({
+  spinning,
+  prizeNumber,
+  wheelData,
+  onStopSpinning,
+}: {
+  spinning: boolean;
+  prizeNumber: number;
+  wheelData: { option: string }[];
+  onStopSpinning: () => void;
+}) {
+  return (
+    <Wheel
+      mustStartSpinning={spinning}
+      prizeNumber={prizeNumber}
+      data={wheelData}
+      onStopSpinning={onStopSpinning}
+      outerBorderColor={"#111"}
+      radiusLineColor={"#333"}
+      fontSize={14}
+    />
+  );
+});
 
 export default function Page() {
   const [me, setMe] = useState<Player | null>(null);
@@ -76,13 +102,15 @@ export default function Page() {
     if (savedId && savedName) setSavedPlayer({ id: savedId, username: savedName });
   }, []);
 
-  // Watch Firebase data
+  // Watch Firebase players
   useEffect(() => {
     return onValue(playersRef, (snap) => {
       const data = snap.val() || {};
       setPlayers(data);
     });
   }, []);
+
+  // Watch Firebase game state
   useEffect(() => {
     return onValue(stateRef, (snap) => {
       const data = snap.val() || {
@@ -220,19 +248,20 @@ export default function Page() {
 
   const amChosen = me && state?.currentSpinnerId === me.id;
 
-  // ✅ Wheel data memoized more safely to avoid jolting
+  // ✅ Stable wheel data
   const wheelData = useMemo(() => {
     if (!Array.isArray(state?.countries)) return [];
     return state.countries.map((c) => ({ option: `${c.flag} ${c.name}` }));
   }, [JSON.stringify(state?.countries)]);
 
+  // 🎡 Spin logic
   const spin = async () => {
     if (!amChosen || spinning || state.spinning) return;
     const countries = state?.countries || [];
     if (!countries.length) return;
     const index = Math.floor(Math.random() * countries.length);
 
-    // 🔒 Lock spinning in Firebase
+    // 🔒 Lock spinning
     await runTransaction(stateRef, (curr: GameState | null) => {
       if (!curr || curr.spinning) return curr;
       return { ...curr, spinning: true };
@@ -270,6 +299,7 @@ export default function Page() {
     });
   };
 
+  // Reset
   const resetRoom = async () => {
     await remove(roomRef);
     const initial: GameState = {
@@ -312,7 +342,7 @@ export default function Page() {
         <section className="card space-y-3">
           <h2 className="text-lg font-semibold">Join the lobby</h2>
 
-          {savedPlayer ? (
+          {savedPlayer && (
             <>
               <div className="p-3 border rounded-md bg-gray-100 dark:bg-neutral-800">
                 <p className="text-sm mb-2">
@@ -322,12 +352,11 @@ export default function Page() {
                   Rejoin as {savedPlayer.username}
                 </button>
               </div>
-
               <div className="text-center text-xs opacity-60 my-2">
                 — or join as a new player —
               </div>
             </>
-          ) : null}
+          )}
 
           <div className="flex gap-2">
             <input
@@ -395,20 +424,23 @@ export default function Page() {
 
           <div className="flex flex-col items-center gap-3">
             <div className="w-full max-w-[360px]">
-              <Wheel
-                mustStartSpinning={spinning}
+              <StableWheel
+                spinning={spinning}
                 prizeNumber={prizeNumber}
-                data={wheelData}
+                wheelData={wheelData}
                 onStopSpinning={onStopSpinning}
-                outerBorderColor={"#111"}
-                radiusLineColor={"#333"}
-                fontSize={14}
               />
             </div>
             <button
               className="btn btn-primary"
               onClick={spin}
-              disabled={!amChosen || spinning || state.spinning || gameOver || (state?.countries?.length ?? 0) === 0}
+              disabled={
+                !amChosen ||
+                spinning ||
+                state.spinning ||
+                gameOver ||
+                (state?.countries?.length ?? 0) === 0
+              }
             >
               {amChosen
                 ? spinning
@@ -422,8 +454,8 @@ export default function Page() {
             <table className="table">
               <thead>
                 <tr>
-                  <th className="w-1/2">Player</th>
-                  <th className="w-1/2">Result</th>
+                  <th>Player</th>
+                  <th>Result</th>
                 </tr>
               </thead>
               <tbody>
