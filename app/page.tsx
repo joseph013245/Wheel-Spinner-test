@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ref, onValue, set, push, onDisconnect, runTransaction, remove } from "firebase/database";
+import { ref, onValue, set, push, onDisconnect, runTransaction, remove, get } from "firebase/database";
 import { db } from "@/lib/firebase";
 import dynamic from "next/dynamic";
 
@@ -50,6 +50,14 @@ export default function Page() {
   const [usernameInput, setUsernameInput] = useState("");
   const [spinning, setSpinning] = useState(false);
   const [prizeNumber, setPrizeNumber] = useState(0);
+  const [savedPlayer, setSavedPlayer] = useState<{ id: string; username: string } | null>(null);
+
+  // 🧠 Load saved player from localStorage
+  useEffect(() => {
+    const savedId = localStorage.getItem("wheelPlayerId");
+    const savedName = localStorage.getItem("wheelUsername");
+    if (savedId && savedName) setSavedPlayer({ id: savedId, username: savedName });
+  }, []);
 
   // Watch Firebase
   useEffect(() => onValue(playersRef, (snap) => setPlayers(snap.val() || {})), []);
@@ -80,7 +88,7 @@ export default function Page() {
 
   const playerCount = useMemo(() => Object.keys(players || {}).length, [players]);
 
-  // Join
+  // ✅ Join (new player)
   const handleJoin = async () => {
     const username = usernameInput.trim().slice(0, 20);
     if (!username) return;
@@ -90,6 +98,25 @@ export default function Page() {
     await set(newRef, player);
     onDisconnect(newRef).remove();
     setMe(player);
+    localStorage.setItem("wheelPlayerId", meId);
+    localStorage.setItem("wheelUsername", username);
+    setSavedPlayer({ id: meId, username });
+  };
+
+  // ✅ Rejoin (existing player)
+  const handleRejoin = async () => {
+    if (!savedPlayer) return;
+    const playerSnap = await get(ref(db, `rooms/${ROOM_ID}/players/${savedPlayer.id}`));
+    if (playerSnap.exists()) {
+      const player = playerSnap.val() as Player;
+      setMe(player);
+    } else {
+      // If their record was removed (e.g., from disconnect timeout), re-add them
+      const player: Player = { id: savedPlayer.id, username: savedPlayer.username, joinedAt: Date.now() };
+      await set(ref(db, `rooms/${ROOM_ID}/players/${savedPlayer.id}`), player);
+      onDisconnect(ref(db, `rooms/${ROOM_ID}/players/${savedPlayer.id}`)).remove();
+      setMe(player);
+    }
   };
 
   // Start game
@@ -110,7 +137,7 @@ export default function Page() {
     });
   };
 
-  // Auto pick spinner when game starts or spinner cleared
+  // Auto pick spinner
   useEffect(() => {
     if (state?.started && !state?.currentSpinnerId && (state?.remainingPlayerIds?.length || 0) > 0) {
       runTransaction(stateRef, (curr: GameState | null) => {
@@ -124,7 +151,7 @@ export default function Page() {
 
   const amChosen = me && state?.currentSpinnerId === me.id;
 
-  // Wheel setup
+  // Spin logic
   const wheelData = useMemo(
     () => (Array.isArray(state?.countries) ? state.countries.map(c => ({ option: `${c.flag} ${c.name}` })) : []),
     [state?.countries]
@@ -200,17 +227,30 @@ export default function Page() {
       {!me && (
         <section className="card space-y-3">
           <h2 className="text-lg font-semibold">Join the lobby</h2>
+
+          {savedPlayer ? (
+            <>
+              <div className="p-3 border rounded-md bg-gray-100 dark:bg-neutral-800">
+                <p className="text-sm mb-2">Welcome back, <b>{savedPlayer.username}</b>!</p>
+                <button className="btn btn-primary w-full" onClick={handleRejoin}>
+                  Rejoin as {savedPlayer.username}
+                </button>
+              </div>
+
+              <div className="text-center text-xs opacity-60 my-2">— or join as a new player —</div>
+            </>
+          ) : null}
+
           <div className="flex gap-2">
             <input
               className="input"
-              placeholder="Enter a username"
+              placeholder="Enter a username (new player)"
               value={usernameInput}
               onChange={(e) => setUsernameInput(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && handleJoin()}
             />
             <button className="btn btn-primary" onClick={handleJoin}>Join</button>
           </div>
-          <p className="text-xs opacity-70">No password. Your spot is removed if you close the tab.</p>
         </section>
       )}
 
@@ -239,10 +279,8 @@ export default function Page() {
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
-            <div className="text-sm">
-              Chosen to spin: <span className="font-semibold">{currentSpinnerName || "(selecting...)"}</span>
-            </div>
+          <div className="text-sm">
+            Chosen to spin: <span className="font-semibold">{currentSpinnerName || "(selecting...)"}</span>
           </div>
 
           <div className="flex flex-col items-center gap-3">
