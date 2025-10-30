@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ref, onValue, set, push, onDisconnect, runTransaction } from "firebase/database";
+import { ref, onValue, set, push, onDisconnect, runTransaction, remove } from "firebase/database";
 import { db } from "@/lib/firebase";
 import dynamic from "next/dynamic";
 
@@ -49,20 +49,16 @@ export default function Page() {
   const [usernameInput, setUsernameInput] = useState("");
   const [spinning, setSpinning] = useState(false);
   const [prizeNumber, setPrizeNumber] = useState(0);
-  const wheelMustStart = spinning;
   const wheelRef = useRef<any>(null);
 
-  // Watch players and game state in real time
+  // ✅ Live Firebase sync
   useEffect(() => onValue(playersRef, (snap) => setPlayers(snap.val() || {})), []);
-  useEffect(() => onValue(stateRef, (snap) => setState(snap.val() || {
-    started: false,
-    currentSpinnerId: null,
-    countries: INITIAL_COUNTRIES,
-    remainingPlayerIds: [],
-    results: []
-  })), []);
+  useEffect(() => onValue(stateRef, (snap) => {
+    const data = snap.val();
+    if (data) setState(data);
+  }), []);
 
-  // Ensure the room exists
+  // ✅ Ensure the room exists
   useEffect(() => {
     const off = onValue(roomRef, (snap) => {
       if (!snap.val()) {
@@ -81,6 +77,7 @@ export default function Page() {
 
   const playerCount = useMemo(() => Object.keys(players || {}).length, [players]);
 
+  // ✅ Join the game
   const handleJoin = async () => {
     const username = usernameInput.trim().slice(0, 20);
     if (!username) return;
@@ -92,6 +89,7 @@ export default function Page() {
     setMe(player);
   };
 
+  // ✅ Start the game
   const canStart = !state?.started && playerCount >= GAME_SIZE;
   const handleStart = async () => {
     if (!canStart) return;
@@ -109,6 +107,7 @@ export default function Page() {
     });
   };
 
+  // ✅ Pick a spinner
   const amChosen = me && state?.currentSpinnerId === me.id;
   const canPickSpinner = state?.started && !state?.currentSpinnerId && (state?.remainingPlayerIds?.length || 0) > 0;
 
@@ -121,6 +120,7 @@ export default function Page() {
     });
   };
 
+  // ✅ Spin logic
   const wheelData = useMemo(
     () => (Array.isArray(state?.countries) ? state.countries.map(c => ({ option: `${c.flag} ${c.name}` })) : []),
     [state?.countries]
@@ -160,6 +160,24 @@ export default function Page() {
     });
   };
 
+  // ✅ Reset room (for testing)
+  const resetRoom = async () => {
+    await remove(roomRef);
+    const initial: GameState = {
+      started: false,
+      currentSpinnerId: null,
+      countries: INITIAL_COUNTRIES,
+      remainingPlayerIds: [],
+      results: []
+    };
+    await set(roomRef, { state: initial, players: {} });
+    setMe(null);
+    setPlayers({});
+    setState(initial);
+    alert("Room has been reset.");
+  };
+
+  // Derived values
   const currentSpinnerName = useMemo(
     () =>
       state?.currentSpinnerId
@@ -169,6 +187,18 @@ export default function Page() {
   );
 
   const gameOver = state?.started && (state?.results?.length || 0) >= GAME_SIZE;
+
+  // ✅ Basic safety fallback
+  if (!state || !Array.isArray(state.countries)) {
+    return (
+      <main className="container text-center py-20">
+        <p className="mb-4">⚠️ Something went wrong with the game data.</p>
+        <button className="btn btn-primary" onClick={resetRoom}>
+          Reset Room
+        </button>
+      </main>
+    );
+  }
 
   return (
     <main className="container space-y-6">
@@ -206,6 +236,7 @@ export default function Page() {
         </div>
         <div className="flex items-center gap-2">
           <button className="btn btn-primary" disabled={!canStart} onClick={handleStart}>Start game</button>
+          <button className="btn btn-secondary" onClick={resetRoom}>Reset Game</button>
           {!canStart && <span className="text-xs opacity-70">Need {Math.max(0, GAME_SIZE - playerCount)} more to start</span>}
         </div>
       </section>
@@ -232,7 +263,7 @@ export default function Page() {
             <div className="w-full max-w-[360px]">
               <Wheel
                 key={wheelData.map(d => d.option).join("|")}
-                mustStartSpinning={wheelMustStart}
+                mustStartSpinning={spinning}
                 prizeNumber={prizeNumber}
                 data={wheelData}
                 onStopSpinning={onStopSpinning}
@@ -267,7 +298,7 @@ export default function Page() {
           </div>
 
           {gameOver && (
-            <div className="text-center text-sm opacity-80">Game complete! Refresh to reset the room.</div>
+            <div className="text-center text-sm opacity-80">Game complete! You can reset to play again.</div>
           )}
         </section>
       )}
