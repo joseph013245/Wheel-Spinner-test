@@ -1,5 +1,4 @@
 "use client";
-// full reupload test
 import { useEffect, useMemo, useState } from "react";
 import {
   ref,
@@ -59,15 +58,7 @@ export default function Page() {
   const [usernameInput, setUsernameInput] = useState("");
   const [spinning, setSpinning] = useState(false);
   const [prizeNumber, setPrizeNumber] = useState(0);
-  const [spinToken, setSpinToken] = useState(0); // triggers StableWheel spin
-  const [savedPlayer, setSavedPlayer] = useState<{ id: string; username: string } | null>(null);
-
-  // Load saved player from localStorage
-  useEffect(() => {
-    const savedId = localStorage.getItem("wheelPlayerId");
-    const savedName = localStorage.getItem("wheelUsername");
-    if (savedId && savedName) setSavedPlayer({ id: savedId, username: savedName });
-  }, []);
+  const [spinToken, setSpinToken] = useState(0);
 
   // Watch Firebase data
   useEffect(() => {
@@ -121,31 +112,23 @@ export default function Page() {
     setMe(player);
     localStorage.setItem("wheelPlayerId", meId);
     localStorage.setItem("wheelUsername", username);
-    setSavedPlayer({ id: meId, username });
   };
 
-  // Rejoin (existing player)
-  const handleRejoin = async () => {
-    if (!savedPlayer) return;
-    const playerSnap = await get(ref(db, `rooms/${ROOM_ID}/players/${savedPlayer.id}`));
-
-    let player: Player;
-    if (playerSnap.exists()) {
-      player = playerSnap.val() as Player;
-    } else {
-      player = {
-        id: savedPlayer.id,
-        username: savedPlayer.username,
-        joinedAt: Date.now(),
-        lastSeen: Date.now(),
-      };
-      await set(ref(db, `rooms/${ROOM_ID}/players/${savedPlayer.id}`), player);
+  // Manual rejoin from any device
+  const handleManualRejoin = async (id: string, username: string) => {
+    const playerSnap = await get(ref(db, `rooms/${ROOM_ID}/players/${id}`));
+    if (!playerSnap.exists()) {
+      alert("That player no longer exists in the room.");
+      return;
     }
 
+    const player = playerSnap.val() as Player;
     setMe(player);
+    localStorage.setItem("wheelPlayerId", id);
+    localStorage.setItem("wheelUsername", username);
   };
 
-  // Heartbeat
+  // Heartbeat system 🫀
   useEffect(() => {
     if (!me) return;
     const interval = setInterval(() => {
@@ -154,7 +137,7 @@ export default function Page() {
     return () => clearInterval(interval);
   }, [me]);
 
-  // Online players
+  // Determine online players
   const now = Date.now();
   const onlinePlayerIds = useMemo(
     () =>
@@ -205,7 +188,6 @@ export default function Page() {
     return state.countries.map((c) => ({ option: `${c.flag} ${c.name}` }));
   }, [state?.countries]);
 
-  // Spin button handler
   const spin = async () => {
     if (!amChosen || spinning) return;
     const countries = state?.countries || [];
@@ -213,10 +195,9 @@ export default function Page() {
     const index = Math.floor(Math.random() * countries.length);
     setPrizeNumber(index);
     setSpinning(true);
-    setSpinToken((t) => t + 1); // trigger isolated wheel spin
+    setSpinToken((t) => t + 1);
   };
 
-  // Called by StableWheel after spin completes
   const onWheelFinished = async () => {
     setSpinning(false);
     await runTransaction(stateRef, (curr: GameState | null) => {
@@ -267,7 +248,10 @@ export default function Page() {
     return `${player.username}${isOnline ? "" : " (offline)"}`;
   }, [state?.currentSpinnerId, players, onlinePlayerIds]);
 
-  const gameOver = state?.started && (state?.results?.length || 0) >= GAME_SIZE;
+  const gameOver =
+    state?.started &&
+    (state?.results?.length || 0) >= GAME_SIZE &&
+    state?.remainingPlayerIds?.length === 0;
 
   return (
     <main className="container space-y-6">
@@ -281,21 +265,26 @@ export default function Page() {
         <section className="card space-y-3">
           <h2 className="text-lg font-semibold">Join the lobby</h2>
 
-          {savedPlayer ? (
-            <>
-              <div className="p-3 border rounded-md bg-gray-100 dark:bg-neutral-800">
-                <p className="text-sm mb-2">
-                  Welcome back, <b>{savedPlayer.username}</b>!
-                </p>
-                <button className="btn btn-primary w-full" onClick={handleRejoin}>
-                  Rejoin as {savedPlayer.username}
-                </button>
+          {Object.keys(players || {}).length > 0 && (
+            <div className="p-3 border rounded-md bg-gray-100 dark:bg-neutral-800">
+              <p className="text-sm font-medium mb-2">Rejoin as an existing player:</p>
+              <div className="flex flex-wrap gap-2">
+                {Object.values(players).map((p) => (
+                  <button
+                    key={p.id}
+                    className="px-3 py-1 rounded-full bg-blue-100 hover:bg-blue-200 text-sm font-medium"
+                    onClick={() => handleManualRejoin(p.id, p.username)}
+                  >
+                    {p.username}
+                  </button>
+                ))}
               </div>
-              <div className="text-center text-xs opacity-60 my-2">
-                — or join as a new player —
-              </div>
-            </>
-          ) : null}
+            </div>
+          )}
+
+          <div className="text-center text-xs opacity-60 my-2">
+            — or join as a new player —
+          </div>
 
           <div className="flex gap-2">
             <input
@@ -312,7 +301,7 @@ export default function Page() {
         </section>
       )}
 
-      {/* Players list */}
+      {/* Player list */}
       <section className="card space-y-3">
         <h2 className="text-lg font-semibold">
           Lobby · Players ({playerCount}/{GAME_SIZE})
@@ -370,7 +359,6 @@ export default function Page() {
                 triggerToken={spinToken}
                 prizeNumber={prizeNumber}
                 onFinished={onWheelFinished}
-                gameOver={gameOver} // 👈 add this line
               />
             </div>
 
