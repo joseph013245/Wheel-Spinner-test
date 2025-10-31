@@ -59,6 +59,7 @@ export default function Page() {
   const [spinning, setSpinning] = useState(false);
   const [prizeNumber, setPrizeNumber] = useState(0);
   const [spinToken, setSpinToken] = useState(0);
+  const [gameComplete, setGameComplete] = useState(false);
 
   // Watch Firebase data
   useEffect(() => {
@@ -77,6 +78,13 @@ export default function Page() {
         results: [],
       };
       setState(data);
+
+      // Detect if game is done as soon as Firebase updates
+      const done =
+        data.started &&
+        (data.results?.length || 0) >= GAME_SIZE &&
+        (data.remainingPlayerIds?.length || 0) === 0;
+      setGameComplete(done);
     });
   }, []);
 
@@ -99,7 +107,7 @@ export default function Page() {
 
   const playerCount = useMemo(() => Object.keys(players || {}).length, [players]);
 
-  // Join (new player)
+  // Join new player
   const handleJoin = async () => {
     const username = usernameInput.trim().slice(0, 20);
     if (!username) return;
@@ -114,21 +122,20 @@ export default function Page() {
     localStorage.setItem("wheelUsername", username);
   };
 
-  // Manual rejoin from any device
+  // Manual rejoin
   const handleManualRejoin = async (id: string, username: string) => {
     const playerSnap = await get(ref(db, `rooms/${ROOM_ID}/players/${id}`));
     if (!playerSnap.exists()) {
       alert("That player no longer exists in the room.");
       return;
     }
-
     const player = playerSnap.val() as Player;
     setMe(player);
     localStorage.setItem("wheelPlayerId", id);
     localStorage.setItem("wheelUsername", username);
   };
 
-  // Heartbeat system
+  // Heartbeat
   useEffect(() => {
     if (!me) return;
     const interval = setInterval(() => {
@@ -137,7 +144,7 @@ export default function Page() {
     return () => clearInterval(interval);
   }, [me]);
 
-  // Determine online players
+  // Online detection
   const now = Date.now();
   const onlinePlayerIds = useMemo(
     () =>
@@ -163,11 +170,16 @@ export default function Page() {
         results: [],
       };
     });
+    setGameComplete(false);
   };
 
-  // Auto pick spinner
+  // Auto-pick spinner
   useEffect(() => {
-    if (state?.started && !state?.currentSpinnerId && (state?.remainingPlayerIds?.length || 0) > 0) {
+    if (
+      state?.started &&
+      !state?.currentSpinnerId &&
+      (state?.remainingPlayerIds?.length || 0) > 0
+    ) {
       runTransaction(stateRef, (curr: GameState | null) => {
         if (!curr || !curr.started || curr.currentSpinnerId || !curr.remainingPlayerIds.length)
           return curr;
@@ -180,7 +192,7 @@ export default function Page() {
 
   const amChosen = me && state?.currentSpinnerId === me.id;
 
-  // ✅ Safe wheel data
+  // Wheel data
   const wheelData = useMemo(() => {
     if (!Array.isArray(state?.countries) || state.countries.length === 0) {
       return [{ option: "🎡 Waiting…" }];
@@ -188,6 +200,7 @@ export default function Page() {
     return state.countries.map((c) => ({ option: `${c.flag} ${c.name}` }));
   }, [state?.countries]);
 
+  // Spin logic
   const spin = async () => {
     if (!amChosen || spinning) return;
     const countries = state?.countries || [];
@@ -210,6 +223,10 @@ export default function Page() {
         (id) => id !== curr.currentSpinnerId
       );
       const nextCountries = curr.countries.filter((_, i) => i !== prizeNumber);
+
+      const finished =
+        nextRemaining.length === 0 || nextCountries.length === 0;
+
       return {
         ...curr,
         countries: nextCountries,
@@ -219,8 +236,17 @@ export default function Page() {
           ...(curr.results || []),
           { playerName, country: winningCountry.name, flag: winningCountry.flag },
         ],
+        started: finished ? true : curr.started,
       };
     });
+
+    // Hide wheel immediately after last spin finishes
+    if (
+      state.remainingPlayerIds.length <= 1 ||
+      state.countries.length <= 1
+    ) {
+      setGameComplete(true);
+    }
   };
 
   const resetRoom = async () => {
@@ -236,6 +262,7 @@ export default function Page() {
     setMe(null);
     setPlayers({});
     setState(initial);
+    setGameComplete(false);
     alert("Room has been reset.");
   };
 
@@ -247,11 +274,6 @@ export default function Page() {
     const isOnline = onlinePlayerIds.includes(id);
     return `${player.username}${isOnline ? "" : " (offline)"}`;
   }, [state?.currentSpinnerId, players, onlinePlayerIds]);
-
-  const gameOver =
-    state?.started &&
-    (state?.results?.length || 0) >= GAME_SIZE &&
-    state?.remainingPlayerIds?.length === 0;
 
   return (
     <main className="container space-y-6">
@@ -325,9 +347,6 @@ export default function Page() {
               </div>
             );
           })}
-          {playerCount === 0 && (
-            <div className="text-sm opacity-60">Waiting for players…</div>
-          )}
         </div>
         <div className="flex items-center gap-2">
           <button className="btn btn-primary" disabled={!canStart} onClick={handleStart}>
@@ -350,7 +369,7 @@ export default function Page() {
             </div>
           </div>
 
-          {!gameOver && (
+          {!gameComplete && (
             <>
               <div className="text-sm">
                 Chosen to spin:{" "}
@@ -372,7 +391,7 @@ export default function Page() {
                 <button
                   className="btn btn-primary"
                   onClick={spin}
-                  disabled={!amChosen || spinning || gameOver || (state?.countries?.length ?? 0) === 0}
+                  disabled={!amChosen || spinning || gameComplete}
                 >
                   {amChosen
                     ? spinning
@@ -406,8 +425,7 @@ export default function Page() {
             </table>
           </div>
 
-          {/* 🎉 Game Over */}
-          {gameOver && (
+          {gameComplete && (
             <div className="text-center text-sm opacity-80">
               🎉 Game complete! You can reset to play again.
             </div>
