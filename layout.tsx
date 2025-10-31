@@ -1,13 +1,9 @@
-// app/layout.tsx
-import "./globals.css";
 import type { Metadata } from "next";
-import { Inter } from "next/font/google";
-
-const inter = Inter({ subsets: ["latin"] });
+import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Realtime Wheel Spinner",
-  description: "A multiplayer country wheel spinner game",
+  title: "Blanket Banquet 2025 Twist",
+  description: "A multiplayer twist on the Blanket Banquet 2025 game",
 };
 
 export default function RootLayout({
@@ -17,7 +13,7 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body className={inter.className}>{children}</body>
+      <body>{children}</body>
     </html>
   );
 }
