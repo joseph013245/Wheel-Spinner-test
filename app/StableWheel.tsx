@@ -16,6 +16,7 @@ interface Props {
 export default function StableWheel({ data, triggerToken, prizeNumber, onFinished }: Props) {
   const [mustSpin, setMustSpin] = useState(false);
 
+  // 🎨 Country color palette — bright, distinct, and balanced
   const countryColors: Record<string, string> = {
     Italy: "#009246",
     Spain: "#AA151B",
@@ -32,6 +33,14 @@ export default function StableWheel({ data, triggerToken, prizeNumber, onFinishe
     return countryColors[name] || "#cccccc";
   });
 
+  // text colors — Japan = red, dark ones = white, light ones = black
+  const textColors = data.map((d) => {
+    const name = d.option.replace(/^[^\s]+ /, "").trim();
+    if (name === "Japan") return "#c8102e";
+    if (["Italy", "Mexico", "Spain", "France", "Thailand", "UK & R.O.I"].includes(name)) return "#ffffff";
+    return "#000000";
+  });
+
   useEffect(() => {
     if (triggerToken > 0) {
       setMustSpin(true);
@@ -44,17 +53,18 @@ export default function StableWheel({ data, triggerToken, prizeNumber, onFinishe
       prizeNumber={prizeNumber}
       data={data}
       backgroundColors={backgroundColors}
+      textColors={textColors}
       onStopSpinning={() => {
         setMustSpin(false);
         onFinished();
       }}
-      textColors={["#fff"]}
       outerBorderColor="#000"
       outerBorderWidth={5}
       radiusLineColor="#000"
       radiusLineWidth={1}
       fontSize={14}
       perpendicularText
+      spinDuration={0.4}
     />
   );
 }
