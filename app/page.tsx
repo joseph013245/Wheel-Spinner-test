@@ -272,7 +272,10 @@ export default function Page() {
                 {Object.values(players).map((p) => (
                   <button
                     key={p.id}
-                    className="px-3 py-1 rounded-full bg-blue-100 hover:bg-blue-200 text-sm font-medium"
+                    className="px-3 py-1 rounded-full text-sm font-medium 
+                               bg-gray-200 text-gray-800 hover:bg-gray-300
+                               dark:bg-neutral-700 dark:text-white dark:hover:bg-neutral-600
+                               transition-colors"
                     onClick={() => handleManualRejoin(p.id, p.username)}
                   >
                     {p.username}
