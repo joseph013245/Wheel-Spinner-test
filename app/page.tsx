@@ -128,7 +128,7 @@ export default function Page() {
     localStorage.setItem("wheelUsername", username);
   };
 
-  // Heartbeat system 🫀
+  // Heartbeat system
   useEffect(() => {
     if (!me) return;
     const interval = setInterval(() => {
@@ -350,34 +350,41 @@ export default function Page() {
             </div>
           </div>
 
-          <div className="text-sm">
-            Chosen to spin:{" "}
-            <span className="font-semibold">{currentSpinnerName || "(waiting)"}</span>
-          </div>
+          {!gameOver && (
+            <>
+              <div className="text-sm">
+                Chosen to spin:{" "}
+                <span className="font-semibold">
+                  {currentSpinnerName || "(waiting)"}
+                </span>
+              </div>
 
-          <div className="flex flex-col items-center gap-3">
-            <div className="w-full max-w-[360px]">
-              <StableWheel
-                data={wheelData}
-                triggerToken={spinToken}
-                prizeNumber={prizeNumber}
-                onFinished={onWheelFinished}
-              />
-            </div>
+              <div className="flex flex-col items-center gap-3">
+                <div className="w-full max-w-[360px]">
+                  <StableWheel
+                    data={wheelData}
+                    triggerToken={spinToken}
+                    prizeNumber={prizeNumber}
+                    onFinished={onWheelFinished}
+                  />
+                </div>
 
-            <button
-              className="btn btn-primary"
-              onClick={spin}
-              disabled={!amChosen || spinning || gameOver || (state?.countries?.length ?? 0) === 0}
-            >
-              {amChosen
-                ? spinning
-                  ? "Spinning…"
-                  : "Spin the wheel"
-                : "Waiting for spinner"}
-            </button>
-          </div>
+                <button
+                  className="btn btn-primary"
+                  onClick={spin}
+                  disabled={!amChosen || spinning || gameOver || (state?.countries?.length ?? 0) === 0}
+                >
+                  {amChosen
+                    ? spinning
+                      ? "Spinning…"
+                      : "Spin the wheel"
+                    : "Waiting for spinner"}
+                </button>
+              </div>
+            </>
+          )}
 
+          {/* Results Table */}
           <div className="overflow-x-auto">
             <table className="table">
               <thead>
@@ -399,6 +406,7 @@ export default function Page() {
             </table>
           </div>
 
+          {/* 🎉 Game Over */}
           {gameOver && (
             <div className="text-center text-sm opacity-80">
               🎉 Game complete! You can reset to play again.
